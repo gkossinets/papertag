@@ -368,7 +368,7 @@ class CrossrefClient:
                     title=item['title'][0],
                     authors=self._extract_authors(item),
                     year=self._extract_year(item),
-                    journal=item.get('container-title', [None])[0],
+                    journal=(item.get('container-title') or [None])[0],
                     score=score
                 )
 
@@ -413,10 +413,10 @@ class CrossrefClient:
             item = data['message']
             metadata = {
                 'doi': item.get('DOI'),
-                'title': item.get('title', [None])[0],
+                'title': (item.get('title') or [None])[0],
                 'authors': self._extract_authors(item),
                 'year': self._extract_year(item),
-                'journal': item.get('container-title', [None])[0],
+                'journal': (item.get('container-title') or [None])[0],
                 'publisher': item.get('publisher'),
                 'type': item.get('type'),
             }

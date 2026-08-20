@@ -411,6 +411,36 @@ class TestCrossrefClient(unittest.TestCase):
         self.assertEqual(metadata['journal'], 'Nature')
 
     @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    def test_fetch_metadata_empty_container_title(self, mock_request):
+        """Preprints (e.g. OSF) return 'container-title': [] rather than
+        omitting the key entirely; indexing [0] on that empty list must not
+        raise IndexError."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'message': {
+                'DOI': '10.31219/osf.io/gw7r5_v2',
+                'title': ['Some Preprint Title'],
+                'author': [
+                    {'given': 'Jane', 'family': 'Doe'}
+                ],
+                'issued': {
+                    'date-parts': [[2025, 9, 25]]
+                },
+                'container-title': [],
+                'publisher': 'Center for Open Science',
+                'type': 'posted-content'
+            }
+        }
+        mock_request.return_value = mock_response
+
+        metadata = self.client.fetch_metadata('10.31219/osf.io/gw7r5_v2')
+
+        self.assertEqual(metadata['doi'], '10.31219/osf.io/gw7r5_v2')
+        self.assertEqual(metadata['title'], 'Some Preprint Title')
+        self.assertIsNone(metadata['journal'])
+
+    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
     def test_fetch_metadata_clean_doi(self, mock_request):
         """Test fetching metadata cleans DOI from URL."""
         mock_response = Mock()
