@@ -192,11 +192,13 @@ class PDFMetadataManager:
                     max_results=5
                 )
 
-            if not matches:
+            if not matches and self.batch_mode:
                 if not self.ui.quiet:
                     print("⚠️  No matches found in Crossref")
                 self.logger.log_skip(pdf_path, "No Crossref matches found")
                 return 'skipped'
+            elif not matches and not self.ui.quiet:
+                print("⚠️  No matches found in Crossref")
 
             # Step 4: Select match (batch or interactive)
             selected_match = None

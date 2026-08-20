@@ -67,6 +67,25 @@ def test_numbered_pick_skips_confirmation():
     mgr.metadata_updater.update_metadata.assert_called_once()
 
 
+def test_no_matches_offers_manual_doi():
+    """When Crossref returns zero matches, the user should still be able to
+    enter a manual DOI instead of the file being auto-skipped."""
+    mgr = _manager_with_mocks()
+    mgr.crossref_client.search.return_value = []
+    # display_matches signals a manual DOI entry.
+    mgr.ui.display_matches.return_value = ("manual", "10.31219/osf.io/gw7r5_v2")
+    mgr.ui.confirm_metadata.return_value = True
+    mgr.crossref_client.fetch_metadata.return_value = {
+        "doi": "10.31219/osf.io/gw7r5_v2", "title": "T", "authors": ["A, B"],
+        "year": "2020", "journal": "J",
+    }
+
+    result = mgr.process_single_pdf(PDF_PATH)
+
+    mgr.ui.display_matches.assert_called_once()
+    assert result == "completed"
+
+
 def test_manual_doi_still_confirms():
     """Entering a manual DOI still goes through the confirmation step."""
     mgr = _manager_with_mocks()
