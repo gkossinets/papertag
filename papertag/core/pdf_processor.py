@@ -10,9 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-# PDF libraries
-from PyPDF2 import PdfReader
-import pikepdf
+from pypdf import PdfReader
 
 # OCR libraries (optional)
 try:
@@ -111,7 +109,7 @@ class PDFProcessor:
         Extract metadata from a PDF file.
 
         Tries multiple methods in order:
-        1. Standard text extraction (pikepdf → PyPDF2)
+        1. Standard text extraction (pypdf)
         2. OCR if text is insufficient (optional)
         3. Search for DOI in extracted text
         4. Extract title, authors, journal from text
@@ -181,49 +179,29 @@ class PDFProcessor:
 
     def _extract_text(self, pdf_path: str) -> str:
         """
-        Extract text from PDF using standard methods.
+        Extract the text layer of the first page.
 
-        Tries pikepdf first, then falls back to PyPDF2.
+        Only page 1 is read: it carries the title, authors, and usually the
+        DOI, and reading further slows down large PDFs for no gain.
 
         Args:
             pdf_path: Path to PDF file
 
         Returns:
-            Extracted text
+            Extracted text (empty if the page has no text layer)
 
         Raises:
-            PDFReadError: If PDF cannot be read by any method
+            PDFReadError: If the PDF cannot be parsed
         """
-        # Try pikepdf first
-        try:
-            with pikepdf.open(pdf_path) as pdf:
-                text = ""
-                # Extract text from first page only (for performance)
-                if len(pdf.pages) > 0:
-                    page = pdf.pages[0]
-                    try:
-                        text = page.extract_text()
-                    except:
-                        pass  # Fall back to PyPDF2
-
-                if text and len(text.strip()) >= 100:
-                    return text
-        except Exception as e:
-            if self.verbose:
-                print(f"  pikepdf extraction failed: {e}")
-
-        # Fall back to PyPDF2
         try:
             reader = PdfReader(pdf_path)
             if len(reader.pages) == 0:
                 raise PDFReadError("PDF has no pages")
-
-            # Extract from first page
-            text = reader.pages[0].extract_text()
-            return text if text else ""
-
+            return reader.pages[0].extract_text() or ""
+        except PDFReadError:
+            raise
         except Exception as e:
-            raise PDFReadError(f"Failed to read PDF with both pikepdf and PyPDF2: {e}")
+            raise PDFReadError(f"Failed to read PDF: {e}") from e
 
     def _extract_text_with_ocr(self, pdf_path: str, pages: Optional[int] = None) -> str:
         """

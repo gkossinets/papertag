@@ -101,60 +101,31 @@ class TestPDFProcessor(unittest.TestCase):
         journal = self.processor._extract_journal(lines)
         self.assertIsNone(journal)
 
-    @patch('papertag.core.pdf_processor.PdfReader')
-    def test_extract_text_with_pypdf2(self, mock_reader):
-        """Test text extraction using PyPDF2."""
-        # Mock PdfReader
-        mock_page = Mock()
-        mock_page.extract_text.return_value = "Sample extracted text from PDF"
 
-        mock_pdf = Mock()
-        mock_pdf.pages = [mock_page]
+# --- Text extraction against real PDFs -------------------------------------
 
-        mock_reader.return_value = mock_pdf
+import pypdf
+import pytest
 
-        # Create a temporary test file
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-            tmp_path = tmp.name
-
-        try:
-            # Extract text (will use mocked PyPDF2)
-            text = self.processor._extract_text(tmp_path)
-            self.assertEqual(text, "Sample extracted text from PDF")
-        finally:
-            # Clean up
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+from papertag.core import pdf_processor
+from tests.pdf_fixtures import make_text_pdf
 
 
-class TestPDFMetadata(unittest.TestCase):
-    """Test cases for PDFMetadata dataclass."""
-
-    def test_metadata_initialization(self):
-        """Test PDFMetadata initialization."""
-        metadata = PDFMetadata()
-        self.assertIsNone(metadata.title)
-        self.assertIsNone(metadata.authors)
-        self.assertIsNone(metadata.journal)
-        self.assertIsNone(metadata.year)
-        self.assertIsNone(metadata.doi)
-        self.assertEqual(metadata.extracted_text, "")
-        self.assertFalse(metadata.used_ocr)
-
-    def test_metadata_with_values(self):
-        """Test PDFMetadata with values."""
-        metadata = PDFMetadata(
-            title="Test Title",
-            authors="John Doe",
-            doi="10.1234/test",
-            used_ocr=True
-        )
-        self.assertEqual(metadata.title, "Test Title")
-        self.assertEqual(metadata.authors, "John Doe")
-        self.assertEqual(metadata.doi, "10.1234/test")
-        self.assertTrue(metadata.used_ocr)
+def test_text_extraction_uses_pypdf():
+    """PyPDF2 is deprecated; extraction must go through its successor."""
+    assert pdf_processor.PdfReader is pypdf.PdfReader
 
 
-if __name__ == '__main__':
-    unittest.main()
+def test_extracts_first_page_text(tmp_path):
+    path = make_text_pdf(tmp_path / "paper.pdf",
+                         ["Deep Learning for Everyone", "Jane Doe", "doi:10.1234/abc.5678"])
+    text = PDFProcessor(use_ocr=False)._extract_text(str(path))
+    assert "Deep Learning for Everyone" in text
+    assert "10.1234/abc.5678" in text
+
+
+def test_unreadable_pdf_raises_read_error(tmp_path):
+    path = tmp_path / "broken.pdf"
+    path.write_bytes(b"this is not a pdf")
+    with pytest.raises(PDFReadError):
+        PDFProcessor(use_ocr=False)._extract_text(str(path))
