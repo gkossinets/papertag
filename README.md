@@ -10,9 +10,9 @@ page, identifies the paper through [Crossref](https://www.crossref.org/),
 writes the correct title, authors, year, journal and DOI into the file, and
 renames it:
 
-```
-393440a0.pdf  ->  Watts and Strogatz - 1998 - Collective dynamics of small-world networks.pdf
-```
+| Before | After |
+|--------|-------|
+| `393440a0.pdf` | `Watts and Strogatz - 1998 - Collective dynamics of small-world networks.pdf` |
 
 Files keep their original modification and creation dates, so they stay sorted
 where you left them.
