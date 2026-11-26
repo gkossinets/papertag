@@ -274,6 +274,23 @@ papertag/
   utils/                    JSON session log, timestamp preservation
 ```
 
+### Measuring match quality
+
+Two tools measure what batch mode would do, without changing any PDF:
+
+```sh
+python -m tests.scoring_benchmark          # recorded Crossref searches, offline
+python tools/eval_library.py -r ~/Papers   # your own PDFs (sends queries to Crossref)
+```
+
+`tools/eval_library.py` uses the DOI that publishers embed in many PDFs as the
+right answer. It hides that DOI, runs papertag's search, and counts right
+accepts, wrong accepts and skips for three query sources: what papertag sends,
+page metadata only, and the filename only. Crossref responses are cached in
+`~/.cache/papertag/eval-crossref`, so a rerun after a code change compares like
+with like. `--save FILE` writes per-file results for comparison. Results name
+your files, so the tool refuses to save them inside the repository.
+
 [PROJECT.md](PROJECT.md) has the architecture notes, design decisions and
 roadmap.
 

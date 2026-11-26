@@ -67,6 +67,9 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   `tests/test_scoring_benchmark.py` guards them. Re-record with `tools/record_crossref_benchmark.py`
   when the query changes (step 3.4).
 - 2026-11-26: Crossref 429 responses are retried (Retry-After, capped at 60 s).
+- 2026-11-26: `tools/eval_library.py` evaluates on the user's own PDFs (publisher-embedded DOI as
+  the answer, hidden). The query comes from `cli.search_query`, shared with the CLI. It never writes
+  PDFs and refuses `--save`/`--cache` paths inside the repo: results name personal files.
 
 ## Roadmap
 
@@ -95,6 +98,9 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       high-confidence filename title should beat a page-text guess (`title_source == "text"`);
       today `pdf_metadata.title or filename_hints.title` discards it. (32/37 of these PDFs print
       their DOI on page 1, so in practice they are found by exact lookup.)
+      Measure before/after with `tools/eval_library.py` on a real library (cached Crossref
+      responses; results saved outside the repo). Its "papertag" row should move toward the
+      "filename" row.
    4. Crossref `query.bibliographic` / `query.author`, `select=`
    5. Batch: require margin over runner-up; `--threshold`
    6. Verify a DOI found in page text against the page's title (reference lists contain

@@ -36,6 +36,25 @@ from papertag.utils import SessionLogger
 log = logging.getLogger(__name__)
 
 
+def search_query(
+    pdf_metadata: PDFMetadata, filename_hints: FilenameHints
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Choose the title, author and year to search Crossref with.
+
+    Shared with tools/eval_library.py so it measures the query papertag sends.
+
+    Args:
+        pdf_metadata: What was read from the PDF (embedded metadata, page text).
+        filename_hints: What was parsed from the filename.
+
+    Returns:
+        ``(title, author, year)``; each None when neither source has it.
+    """
+    return (pdf_metadata.title or filename_hints.title,
+            pdf_metadata.authors or filename_hints.author,
+            pdf_metadata.year or filename_hints.year)
+
+
 class PDFMetadataManager:
     """Main orchestrator for PDF metadata processing."""
 
@@ -162,10 +181,7 @@ class PDFMetadataManager:
             if not self.ui.quiet:
                 print("Searching Crossref API...")
 
-            # Build search query from extracted metadata and filename hints
-            search_title = pdf_metadata.title or filename_hints.title
-            search_author = pdf_metadata.authors or filename_hints.author
-            search_year = pdf_metadata.year or filename_hints.year
+            search_title, search_author, search_year = search_query(pdf_metadata, filename_hints)
 
             if pdf_metadata.doi:
                 # If we have a DOI, fetch metadata directly
