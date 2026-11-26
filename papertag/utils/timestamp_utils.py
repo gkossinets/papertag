@@ -5,11 +5,17 @@ This module provides utilities for preserving file timestamps across different
 platforms (macOS, Linux, Windows).
 """
 
+import logging
 import os
 import platform
 import subprocess
 import time
 from typing import Dict, Optional
+
+
+log = logging.getLogger(__name__)
+
+_setfile_warned = False
 
 
 def get_timestamps(file_path: str) -> Dict[str, float]:
@@ -54,7 +60,7 @@ def set_timestamps(file_path: str, timestamps: Dict[str, float]) -> bool:
         True if successful, False otherwise
     """
     if not os.path.exists(file_path):
-        print(f"Warning: File not found: {file_path}")
+        log.warning("Cannot set timestamps, file not found: %s", file_path)
         return False
 
     try:
@@ -73,7 +79,7 @@ def set_timestamps(file_path: str, timestamps: Dict[str, float]) -> bool:
         return True
 
     except Exception as e:
-        print(f"Warning: Could not set all timestamps: {e}")
+        log.warning("Could not set all timestamps on %s: %s", file_path, e)
         return False
 
 
@@ -97,11 +103,11 @@ def preserve_timestamps(target_path: str, source_path: str) -> bool:
     """
     try:
         if not os.path.exists(source_path):
-            print(f"Warning: Source file not found: {source_path}")
+            log.warning("Cannot copy timestamps, source not found: %s", source_path)
             return False
 
         if not os.path.exists(target_path):
-            print(f"Warning: Target file not found: {target_path}")
+            log.warning("Cannot copy timestamps, target not found: %s", target_path)
             return False
 
         # Get timestamps from source
@@ -111,7 +117,7 @@ def preserve_timestamps(target_path: str, source_path: str) -> bool:
         return set_timestamps(target_path, timestamps)
 
     except Exception as e:
-        print(f"Warning: Could not preserve timestamps: {e}")
+        log.warning("Could not preserve timestamps on %s: %s", target_path, e)
         return False
 
 
@@ -139,9 +145,12 @@ def _set_creation_date_macos(file_path: str, creation_time: float) -> bool:
         )
 
         if result.returncode != 0:
-            # SetFile not available, warn but don't fail
-            print("  Note: SetFile not available. Creation time not preserved.")
-            print("  Install Xcode Command Line Tools for full timestamp preservation.")
+            # Warn once per run, not once per file.
+            global _setfile_warned
+            if not _setfile_warned:
+                log.warning("SetFile not found; file creation dates will not be preserved. "
+                            "Install Xcode Command Line Tools to fix this.")
+                _setfile_warned = True
             return False
 
         # Convert Unix timestamp to format required by SetFile: MM/DD/YYYY HH:MM:SS
@@ -158,9 +167,9 @@ def _set_creation_date_macos(file_path: str, creation_time: float) -> bool:
         return True
 
     except subprocess.CalledProcessError as e:
-        print(f"  Warning: SetFile command failed: {e}")
+        log.warning("SetFile failed on %s: %s", file_path, e)
         return False
 
     except Exception as e:
-        print(f"  Warning: Could not set creation date: {e}")
+        log.warning("Could not set creation date on %s: %s", file_path, e)
         return False

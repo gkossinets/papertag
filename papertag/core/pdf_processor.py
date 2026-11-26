@@ -4,6 +4,7 @@ PDF Processor Module
 Extracts text, metadata, and DOIs from PDF files with OCR fallback for scanned documents.
 """
 
+import logging
 import os
 import re
 import tempfile
@@ -19,6 +20,8 @@ try:
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
+
+log = logging.getLogger(__name__)
 
 
 # Custom exceptions
@@ -88,21 +91,20 @@ class PDFProcessor:
         r'Elsevier|Springer|Wiley|SAGE|IEEE|Oxford University Press|Cambridge University Press'
     ]
 
-    def __init__(self, use_ocr: bool = True, ocr_pages: int = 1, verbose: bool = False):
+    def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
         Initialize PDF processor.
 
         Args:
             use_ocr: Enable OCR fallback for scanned documents
             ocr_pages: Number of pages to OCR (default: 1)
-            verbose: Print detailed processing information
         """
         self.use_ocr = use_ocr and OCR_AVAILABLE
         self.ocr_pages = ocr_pages
-        self.verbose = verbose
 
         if use_ocr and not OCR_AVAILABLE:
-            print("Warning: OCR requested but pytesseract and pdf2image are not installed.")
+            log.warning("OCR unavailable: install the 'ocr' extra (pytesseract, pdf2image) "
+                        "to read scanned PDFs.")
 
     def extract_metadata(self, pdf_path: str) -> PDFMetadata:
         """
@@ -128,8 +130,7 @@ class PDFProcessor:
         if not os.path.exists(pdf_path):
             raise PDFNotFoundError(f"PDF file not found: {pdf_path}")
 
-        if self.verbose:
-            print(f"Processing: {pdf_path}")
+        log.debug("Processing: %s", pdf_path)
 
         # Initialize metadata object
         metadata = PDFMetadata()
@@ -140,25 +141,21 @@ class PDFProcessor:
         # If text is insufficient, try OCR
         if len(text.strip()) < 100:
             if self.use_ocr:
-                if self.verbose:
-                    print("  PDF has little or no extractable text. Using OCR...")
+                log.debug("Little or no extractable text; using OCR")
                 text = self._extract_text_with_ocr(pdf_path)
                 metadata.used_ocr = True
             else:
-                if self.verbose:
-                    print("  PDF has little or no extractable text and OCR is disabled.")
+                log.debug("Little or no extractable text and OCR is disabled")
 
         metadata.extracted_text = text
 
-        if self.verbose and text:
-            print(f"  Extracted {len(text)} characters of text")
+        log.debug("Extracted %d characters of text", len(text))
 
         # Extract DOI from text
         doi = self._extract_doi(text)
         if doi:
             metadata.doi = doi
-            if self.verbose:
-                print(f"  Found DOI: {doi}")
+            log.debug("Found DOI: %s", doi)
 
         # Extract other metadata from text
         if text:
@@ -167,13 +164,7 @@ class PDFProcessor:
             metadata.authors = authors
             metadata.journal = journal
 
-            if self.verbose:
-                if title:
-                    print(f"  Extracted title: {title}")
-                if authors:
-                    print(f"  Extracted authors: {authors}")
-                if journal:
-                    print(f"  Extracted journal: {journal}")
+            log.debug("Extracted title=%r authors=%r journal=%r", title, authors, journal)
 
         return metadata
 
@@ -237,16 +228,14 @@ class PDFProcessor:
                 # Extract text from each image using OCR
                 text = ""
                 for i, image in enumerate(images):
-                    if self.verbose:
-                        print(f"  OCR processing page {i+1}/{len(images)}...")
+                    log.debug("OCR page %d/%d", i + 1, len(images))
                     page_text = pytesseract.image_to_string(image)
                     text += f"\n--- Page {i+1} ---\n{page_text}"
 
                 return text
 
         except Exception as e:
-            if self.verbose:
-                print(f"  OCR Error: {e}")
+            log.warning("OCR failed for %s: %s", pdf_path, e)
             return ""
 
     def _sanitize_doi(self, doi: str) -> str:

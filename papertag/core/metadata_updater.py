@@ -5,6 +5,7 @@ This module provides functionality to update PDF metadata and rename files
 in Zotero format while preserving file timestamps.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ except ImportError:
     PATHVALIDATE_AVAILABLE = False
 
 from ..utils.timestamp_utils import preserve_timestamps, get_timestamps, set_timestamps
+
+log = logging.getLogger(__name__)
 
 
 # Custom exceptions
@@ -165,7 +168,7 @@ class MetadataUpdater:
         if self.keep_backup and output_path == pdf_path:
             backup_path = f"{pdf_path}.bak"
             shutil.copy2(pdf_path, backup_path)
-            print(f"  Created backup: {backup_path}")
+            log.info("Created backup: %s", backup_path)
 
         try:
             return self._update_with_pikepdf(pdf_path, metadata, output_path, original_timestamps)
@@ -200,7 +203,7 @@ class MetadataUpdater:
                         # Set creation date to January 1st of the publication year
                         new_docinfo['/CreationDate'] = f"D:{metadata.year}0101000000Z"
                     except Exception as year_err:
-                        print(f"  Warning: Could not set CreationDate: {year_err}")
+                        log.warning("Could not set CreationDate: %s", year_err)
 
                 # Handle journal and DOI in Subject field
                 subject_parts = []
@@ -295,7 +298,7 @@ class MetadataUpdater:
                             xmp_meta['pdf:Keywords'] = f"ISBN: {metadata.isbn}"
 
                 except Exception as xmp_error:
-                    print(f"  Warning: Could not update XMP metadata: {xmp_error}")
+                    log.warning("Could not update XMP metadata in %s: %s", pdf_path, xmp_error)
 
                 # Save the PDF
                 pdf.save(temp_output)
@@ -450,7 +453,7 @@ class MetadataUpdater:
             return filename
 
         except Exception as e:
-            print(f"  Error creating Zotero filename: {e}")
+            log.warning("Could not build filename, keeping original: %s", e)
             # Return original filename as fallback
             return os.path.basename(original_path)
 

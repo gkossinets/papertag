@@ -191,7 +191,7 @@ class InteractiveUI:
         if self.quiet:
             return True
 
-        print("\n📝 Review metadata update:")
+        print("\nReview metadata update:")
         print()
         print(f"File: {filename}")
         print()
@@ -253,7 +253,7 @@ class InteractiveUI:
         Returns:
             User choice: 'retry', 'skip', or 'quit'
         """
-        print(f"\n❌ Error processing: {filename}")
+        print(f"\nError processing: {filename}")
         print(f"Error: {str(error)}")
         print()
 
@@ -324,10 +324,10 @@ class InteractiveUI:
         print(f"\nProcessing {total} PDFs...")
         print(f"[{bar}] {current}/{total} ({percentage:.1f}%)")
         print()
-        print(f"✓ Completed: {completed}")
-        print(f"⚠ Skipped: {skipped}")
-        print(f"❌ Failed: {failed}")
-        print(f"⏳ Remaining: {total - current}")
+        print(f"Completed: {completed}")
+        print(f"Skipped:   {skipped}")
+        print(f"Failed:    {failed}")
+        print(f"Remaining: {total - current}")
         print()
 
         # Truncate filename if too long
@@ -360,9 +360,9 @@ class InteractiveUI:
         print("=" * 70)
         print()
         print(f"Total files:      {total}")
-        print(f"✓ Completed:      {completed}")
-        print(f"⚠ Skipped:        {skipped}")
-        print(f"❌ Failed:         {failed}")
+        print(f"Completed:        {completed}")
+        print(f"Skipped:          {skipped}")
+        print(f"Failed:           {failed}")
         print()
 
         if completed > 0:

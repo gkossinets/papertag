@@ -7,6 +7,7 @@ or batch processing modes.
 """
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -31,6 +32,8 @@ from papertag.core import (
 )
 from papertag.ui import InteractiveUI, UserQuitError
 from papertag.utils import SessionLogger
+
+log = logging.getLogger(__name__)
 
 
 class PDFMetadataManager:
@@ -74,7 +77,6 @@ class PDFMetadataManager:
         self.pdf_processor = PDFProcessor(
             use_ocr=use_ocr,
             ocr_pages=ocr_pages,
-            verbose=verbose
         )
         # Only initialize Crossref client if not using from_filename mode
         if not from_filename and email:
@@ -127,9 +129,8 @@ class PDFMetadataManager:
             # Step 1: Parse filename hints
             filename_hints = parse_filename(Path(pdf_path).name)
 
-            if self.ui.verbose:
-                print(f"\nFilename hints: author={filename_hints.author}, "
-                      f"year={filename_hints.year}, confidence={filename_hints.confidence:.2f}")
+            log.debug("Filename hints: author=%s year=%s confidence=%.2f",
+                      filename_hints.author, filename_hints.year, filename_hints.confidence)
 
             # Handle --from-filename mode: extract metadata from filename only
             if self.from_filename:
@@ -141,10 +142,8 @@ class PDFMetadataManager:
 
             pdf_metadata = self.pdf_processor.extract_metadata(pdf_path)
 
-            if self.ui.verbose:
-                print(f"Extracted DOI: {pdf_metadata.doi or 'Not found'}")
-                print(f"Extracted title: {pdf_metadata.title or 'Not found'}")
-                print(f"Used OCR: {pdf_metadata.used_ocr}")
+            log.debug("Extracted DOI=%s title=%s used_ocr=%s",
+                      pdf_metadata.doi, pdf_metadata.title, pdf_metadata.used_ocr)
 
             # Display current PDF docinfo metadata (same fields we will update)
             if not self.ui.quiet:
@@ -173,8 +172,8 @@ class PDFMetadataManager:
                 try:
                     matches = [self.crossref_client.fetch_metadata(pdf_metadata.doi)]
                 except (CrossrefConnectionError, CrossrefAPIError) as e:
-                    if self.ui.verbose:
-                        print(f"DOI lookup failed: {e}")
+                    log.warning("Lookup of DOI %s failed, searching instead: %s",
+                                pdf_metadata.doi, e)
                     # Fall back to search
                     matches = self.crossref_client.search(
                         title=search_title,
@@ -192,11 +191,11 @@ class PDFMetadataManager:
 
             if not matches and self.batch_mode:
                 if not self.ui.quiet:
-                    print("⚠️  No matches found in Crossref")
+                    print("No matches found in Crossref")
                 self.logger.log_skip(pdf_path, "No Crossref matches found")
                 return 'skipped'
             elif not matches and not self.ui.quiet:
-                print("⚠️  No matches found in Crossref")
+                print("No matches found in Crossref")
 
             # Step 4: Select match (batch or interactive)
             selected_match = None
@@ -210,10 +209,10 @@ class PDFMetadataManager:
                 if matches[0].score >= 0.80:
                     selected_match = matches[0]
                     if not self.ui.quiet:
-                        print(f"✓ Auto-selected (score: {matches[0].score:.2f})")
+                        print(f"Auto-selected (score: {matches[0].score:.2f})")
                 else:
                     if not self.ui.quiet:
-                        print(f"⚠️  Skipped - confidence too low ({matches[0].score:.2f} < 0.80)")
+                        print(f"Skipped: confidence too low ({matches[0].score:.2f} < 0.80)")
                     self.logger.log_skip(
                         pdf_path,
                         f"Confidence below threshold: {matches[0].score:.2f}"
@@ -246,8 +245,7 @@ class PDFMetadataManager:
                     try:
                         selected_match = self.crossref_client.fetch_metadata(manual_doi)
                     except (CrossrefConnectionError, CrossrefAPIError) as e:
-                        if not self.ui.quiet:
-                            print(f"❌ Failed to fetch metadata for DOI: {e}")
+                        log.error("Failed to fetch metadata for DOI %s: %s", manual_doi, e)
                         self.logger.log_failure(pdf_path, f"Invalid DOI: {manual_doi}")
                         return 'failed'
 
@@ -303,7 +301,7 @@ class PDFMetadataManager:
             )
 
             if not self.ui.quiet:
-                print(f"✓ Successfully processed")
+                print("Done")
 
             return 'completed'
 
@@ -311,16 +309,14 @@ class PDFMetadataManager:
             raise  # Propagate quit signal
 
         except PDFNotFoundError as e:
-            if not self.ui.quiet:
-                print(f"❌ Error: {e}")
+            log.error("%s", e)
             self.logger.log_failure(pdf_path, str(e))
             return 'failed'
 
         except (PDFProcessingError, PDFUpdateError, FileOperationError) as e:
             # Handle errors interactively
             if self.batch_mode:
-                if not self.ui.quiet:
-                    print(f"❌ Error: {e}")
+                log.error("%s: %s", Path(pdf_path).name, e)
                 self.logger.log_failure(pdf_path, str(e))
                 return 'failed'
             else:
@@ -339,8 +335,7 @@ class PDFMetadataManager:
         except (CrossrefConnectionError, CrossrefAPIError) as e:
             # Connection errors can be retried
             if self.batch_mode:
-                if not self.ui.quiet:
-                    print(f"❌ Connection error: {e}")
+                log.error("%s: Crossref error: %s", Path(pdf_path).name, e)
                 self.logger.log_failure(pdf_path, str(e))
                 return 'failed'
             else:
@@ -360,11 +355,8 @@ class PDFMetadataManager:
                     return 'failed'
 
         except Exception as e:
-            if not self.ui.quiet:
-                print(f"❌ Unexpected error: {e}")
-            if self.ui.verbose:
-                import traceback
-                traceback.print_exc()
+            log.error("%s: unexpected error: %s", Path(pdf_path).name, e)
+            log.debug("Traceback:", exc_info=True)
             self.logger.log_failure(pdf_path, f"Unexpected error: {e}")
             return 'failed'
 
@@ -396,8 +388,8 @@ class PDFMetadataManager:
         # Check if filename parsing was successful
         if filename_hints.confidence < 0.5:
             if not self.ui.quiet:
-                print(f"⚠️  Filename doesn't match expected format (confidence: {filename_hints.confidence:.2f})")
-                print(f"   Expected format: 'Author - Year - Title.pdf'")
+                print(f"Skipped: filename doesn't match 'Author - Year - Title.pdf' "
+                      f"(confidence: {filename_hints.confidence:.2f})")
             self.logger.log_skip(pdf_path, f"Filename format not recognized (confidence: {filename_hints.confidence:.2f})")
             return 'skipped'
 
@@ -412,7 +404,7 @@ class PDFMetadataManager:
 
         if missing_fields and not self.batch_mode:
             if not self.ui.quiet:
-                print(f"⚠️  Missing fields from filename: {', '.join(missing_fields)}")
+                print(f"Missing fields from filename: {', '.join(missing_fields)}")
 
         # Create metadata update from filename hints
         metadata_update = MetadataUpdate(
@@ -457,8 +449,7 @@ class PDFMetadataManager:
         try:
             self.metadata_updater.update_metadata(pdf_path, metadata_update)
         except (PDFUpdateError, FileOperationError) as e:
-            if not self.ui.quiet:
-                print(f"❌ Error updating metadata: {e}")
+            log.error("%s: could not update metadata: %s", Path(pdf_path).name, e)
             self.logger.log_failure(pdf_path, str(e))
             return 'failed'
 
@@ -478,8 +469,7 @@ class PDFMetadataManager:
                     new_filename
                 )
             except (FileOperationError, FileNotFoundError) as e:
-                if not self.ui.quiet:
-                    print(f"❌ Error renaming file: {e}")
+                log.error("%s: could not rename: %s", Path(pdf_path).name, e)
                 self.logger.log_failure(pdf_path, str(e))
                 return 'failed'
 
@@ -493,7 +483,7 @@ class PDFMetadataManager:
         )
 
         if not self.ui.quiet:
-            print(f"✓ Successfully processed")
+            print("Done")
 
         return 'completed'
 
@@ -531,7 +521,7 @@ class PDFMetadataManager:
         except (KeyboardInterrupt, UserQuitError):
             interrupted = True
             if not self.ui.quiet:
-                print("\n\n⚠️  Processing interrupted by user")
+                print("\n\nInterrupted")
 
         finally:
             self.logger.close()
@@ -731,6 +721,34 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def configure_logging(verbose: bool, quiet: bool) -> None:
+    """Send papertag's diagnostics to stderr at a level set by the flags.
+
+    Args:
+        verbose: Show debug detail.
+        quiet: Show errors only.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    logger = logging.getLogger('papertag')
+    # Replace rather than add, so calling this twice doesn't double output.
+    logger.handlers[:] = [handler]
+    logger.propagate = False
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+    elif quiet:
+        logger.setLevel(logging.ERROR)
+    else:
+        logger.setLevel(logging.INFO)
+
+    # pypdf warns about every malformed structure it recovers from. We report
+    # files we cannot read ourselves, so its chatter only helps when debugging.
+    pypdf_logger = logging.getLogger('pypdf')
+    pypdf_logger.handlers[:] = [handler]
+    pypdf_logger.propagate = False
+    pypdf_logger.setLevel(logging.WARNING if verbose else logging.ERROR)
+
+
 # Exit codes: 0 = no failures, 1 = a file failed or bad configuration,
 # 130 = interrupted (the shell convention for SIGINT: 128 + 2).
 EXIT_OK = 0
@@ -748,6 +766,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         Process exit code.
     """
     args = parse_arguments(argv)
+    configure_logging(verbose=args.verbose, quiet=args.quiet)
 
     valid, error_msg = validate_config(args)
     if not valid:

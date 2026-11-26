@@ -23,13 +23,12 @@ class TestPDFProcessor(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.processor = PDFProcessor(use_ocr=False, verbose=False)
+        self.processor = PDFProcessor(use_ocr=False)
 
     def test_initialization(self):
         """Test PDFProcessor initialization."""
-        processor = PDFProcessor(use_ocr=True, ocr_pages=2, verbose=True)
+        processor = PDFProcessor(use_ocr=True, ocr_pages=2)
         self.assertEqual(processor.ocr_pages, 2)
-        self.assertTrue(processor.verbose)
 
     def test_sanitize_doi(self):
         """Test DOI sanitization."""

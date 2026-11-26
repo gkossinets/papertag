@@ -29,13 +29,18 @@ The `ocr` extra (for scanned PDFs) also needs Tesseract and Poppler:
 ```sh
 papertag paper.pdf                    # interactive: review matches, pick one
 papertag ~/Downloads/                 # every PDF in a directory
+papertag *.pdf a/ b/ --batch          # any mix of files, directories and globs
 papertag papers/ --batch --recursive  # auto-accept matches scoring >= 0.80, skip the rest
 papertag paper.pdf --no-rename        # update metadata only
 papertag "Smith - 2020 - Title.pdf" --from-filename   # metadata from the filename, no Crossref
 papertag papers/ --batch --log run.json               # write a JSON log of every action
 ```
 
-Run `papertag --help` for all options.
+Run `papertag --help` for all options. Errors and warnings go to stderr;
+`-v` adds debug detail, `-q` leaves only errors and the summary.
+
+Exit status: `0` if no file failed (skipped files are not failures), `1` if
+any file failed or the arguments were invalid, `130` if interrupted.
 
 ### Interactive choices
 
@@ -51,7 +56,7 @@ filename's metadata, retry, skip, or quit.
 | Author / `dc:creator` | Authors, separated by `;`        |
 | CreationDate       | January 1 of the publication year   |
 | Subject            | `Journal | DOI: 10.xxxx/...`        |
-| Keywords / `dc:identifier` | DOI                         |
+| Keywords / `dc:identifier` | DOI (or ISBN for books without one) |
 
 Filenames: `Author - Year - Title.pdf`, with `Author and Author` for two
 authors and `Author et al.` for three or more. Files with missing metadata get
@@ -61,6 +66,7 @@ a leading `_`. Name conflicts get ` (1)`, ` (2)`, ...
 
 ```sh
 python -m pytest
+PAPERTAG_NETWORK_TESTS=1 python -m pytest   # also hit the live Crossref API
 ```
 
 See [PROJECT.md](PROJECT.md) for architecture, decisions and the roadmap.
