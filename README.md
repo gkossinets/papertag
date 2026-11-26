@@ -291,6 +291,13 @@ page metadata only, and the filename only. Crossref responses are cached in
 with like. `--save FILE` writes per-file results for comparison. Results name
 your files, so the tool refuses to save them inside the repository.
 
+It measures only PDFs with a publisher-embedded DOI, mostly recent journal
+articles, and most of those also print their DOI on page 1. Files without a DOI
+anywhere (books, chapters, older scans, working papers) depend most on title
+search and aren't measured. Spot-check some of those by hand: run papertag
+interactively on a few and look at the candidates it offers (`q` quits without
+changing anything), or run `--batch --log` on copies.
+
 [PROJECT.md](PROJECT.md) has the architecture notes, design decisions and
 roadmap.
 

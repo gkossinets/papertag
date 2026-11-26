@@ -101,6 +101,10 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       Measure before/after with `tools/eval_library.py` on a real library (cached Crossref
       responses; results saved outside the repo). Its "papertag" row should move toward the
       "filename" row.
+      Blind spot: it only measures files with a publisher-embedded DOI (mostly recent articles,
+      32/37 of which print the DOI on page 1). DOI-less files (books, chapters, old scans) are
+      what title search is for; spot-check those by hand (user's choice, 2026-11-26; reading
+      the Zotero database as an answer key was offered and declined).
    4. Crossref `query.bibliographic` / `query.author`, `select=`
    5. Batch: require margin over runner-up; `--threshold`
    6. Verify a DOI found in page text against the page's title (reference lists contain
