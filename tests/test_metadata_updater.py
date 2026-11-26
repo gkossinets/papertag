@@ -13,7 +13,7 @@ try:
 except ImportError:
     PIKEPDF_AVAILABLE = False
 
-from ..core.metadata_updater import (
+from papertag.core.metadata_updater import (
     MetadataUpdater,
     MetadataUpdate,
     PDFUpdateError,
@@ -84,7 +84,7 @@ class TestZoteroFilenameGeneration(unittest.TestCase):
         )
 
         filename = self.updater.generate_zotero_filename(metadata, "original.pdf")
-        self.assertEqual(filename, "Smith & Jones - 2021 - Deep Learning.pdf")
+        self.assertEqual(filename, "Smith and Jones - 2021 - Deep Learning.pdf")
 
     def test_three_or_more_authors(self):
         """Test filename generation with three or more authors."""
@@ -107,9 +107,9 @@ class TestZoteroFilenameGeneration(unittest.TestCase):
         )
 
         filename = self.updater.generate_zotero_filename(metadata, "original.pdf")
-        # Should be truncated to 97 chars + "..."
-        self.assertIn("...", filename)
-        self.assertLess(len(filename), 150)
+        # Truncated to 97 chars; no ellipsis, since a trailing "..." would be
+        # stripped by filename sanitization anyway
+        self.assertEqual(filename, "Smith - 2020 - " + "A" * 97 + ".pdf")
 
     def test_special_characters_removed(self):
         """Test that special characters are removed from filename."""
@@ -214,7 +214,7 @@ class TestFileRenaming(unittest.TestCase):
         self.assertFalse(os.path.exists(old_path))
 
     def test_rename_file_conflict_handling(self):
-        """Test that conflicts are handled by adding (2), (3), etc."""
+        """Test that conflicts are handled by adding (1), (2), etc."""
         # Create initial file
         file1 = os.path.join(self.temp_dir, "test.pdf")
         with open(file1, 'w') as f:
@@ -228,8 +228,8 @@ class TestFileRenaming(unittest.TestCase):
         # Try to rename to existing name
         new_path = self.updater.rename_file(file2, "test.pdf")
 
-        # Should have added (2) to avoid conflict
-        self.assertEqual(new_path, os.path.join(self.temp_dir, "test (2).pdf"))
+        # Should have added (1) to avoid conflict
+        self.assertEqual(new_path, os.path.join(self.temp_dir, "test (1).pdf"))
         self.assertTrue(os.path.exists(new_path))
         self.assertTrue(os.path.exists(file1))  # Original should still exist
 

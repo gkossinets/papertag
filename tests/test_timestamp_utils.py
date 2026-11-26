@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from pdf_metadata_manager.utils.timestamp_utils import (
+from papertag.utils.timestamp_utils import (
     get_timestamps,
     set_timestamps,
     preserve_timestamps,
@@ -129,7 +129,7 @@ class TestSetTimestamps(unittest.TestCase):
         self.assertTrue(result)
 
     @patch('platform.system')
-    @patch('pdf_metadata_manager.utils.timestamp_utils._set_creation_date_macos')
+    @patch('papertag.utils.timestamp_utils._set_creation_date_macos')
     def test_set_timestamps_calls_macos_function(self, mock_macos_func, mock_platform):
         """Test that macOS-specific function is called on macOS."""
         mock_platform.return_value = 'Darwin'
@@ -158,7 +158,7 @@ class TestSetTimestamps(unittest.TestCase):
             'ctime': time.time()
         }
 
-        with patch('pdf_metadata_manager.utils.timestamp_utils._set_creation_date_macos') as mock_macos:
+        with patch('papertag.utils.timestamp_utils._set_creation_date_macos') as mock_macos:
             result = set_timestamps(self.temp_file.name, timestamps)
             self.assertTrue(result)
 

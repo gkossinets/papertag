@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF Metadata Manager - Main CLI Orchestrator
+papertag - command-line entry point and per-file orchestrator
 
 Update PDF metadata from academic sources like Crossref, with interactive
 or batch processing modes.
@@ -13,7 +13,7 @@ import signal
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pdf_metadata_manager.core import (
+from papertag.core import (
     PDFProcessor,
     PDFMetadata,
     PDFProcessingError,
@@ -29,8 +29,8 @@ from pdf_metadata_manager.core import (
     parse_filename,
     FilenameHints
 )
-from pdf_metadata_manager.ui import InteractiveUI, UserQuitError
-from pdf_metadata_manager.utils import SessionLogger
+from papertag.ui import InteractiveUI, UserQuitError
+from papertag.utils import SessionLogger
 
 
 class PDFMetadataManager:
@@ -51,7 +51,7 @@ class PDFMetadataManager:
         from_filename: bool = False
     ):
         """
-        Initialize PDF Metadata Manager.
+        Initialize the orchestrator.
 
         Args:
             email: Email for Crossref API (polite pool), not required for --from-filename

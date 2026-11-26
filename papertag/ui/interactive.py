@@ -7,48 +7,9 @@ error handling, and confirmations during PDF metadata processing.
 import sys
 from typing import List, Optional
 
-# Import from core module - will be available when integrated
-try:
-    from ..core.crossref_client import CrossrefMatch
-    from ..core.filename_parser import FilenameHints
-    from ..core.metadata_updater import MetadataUpdate
-except ImportError:
-    # For standalone testing
-    from dataclasses import dataclass
-
-    @dataclass
-    class CrossrefMatch:
-        doi: str
-        title: str
-        authors: List[str]
-        year: Optional[str]
-        journal: Optional[str]
-        score: float
-
-        @property
-        def confidence_level(self) -> str:
-            if self.score >= 0.80:
-                return "HIGH"
-            elif self.score >= 0.65:
-                return "MEDIUM"
-            else:
-                return "LOW"
-
-    @dataclass
-    class FilenameHints:
-        author: Optional[str] = None
-        year: Optional[str] = None
-        title: Optional[str] = None
-        confidence: float = 0.0
-
-    @dataclass
-    class MetadataUpdate:
-        title: str
-        authors: str
-        year: Optional[str] = None
-        journal: Optional[str] = None
-        doi: Optional[str] = None
-        isbn: Optional[str] = None
+from ..core.crossref_client import CrossrefMatch
+from ..core.filename_parser import FilenameHints
+from ..core.metadata_updater import MetadataUpdate
 
 
 class UserQuitError(Exception):

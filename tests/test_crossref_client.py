@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch, MagicMock
 import time
 import requests
 
-from pdf_metadata_manager.core.crossref_client import (
+from papertag.core.crossref_client import (
     CrossrefClient,
     CrossrefMatch,
     CrossrefConnectionError,
@@ -219,7 +219,7 @@ class TestCrossrefClient(unittest.TestCase):
         # Both should give some year credit
         self.assertGreater(score_close, 0.0)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_search_success(self, mock_request):
         """Test successful search."""
         # Mock response
@@ -270,7 +270,7 @@ class TestCrossrefClient(unittest.TestCase):
         for i in range(len(results) - 1):
             self.assertGreaterEqual(results[i].score, results[i + 1].score)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_search_no_results(self, mock_request):
         """Test search with no results."""
         mock_response = Mock()
@@ -285,7 +285,7 @@ class TestCrossrefClient(unittest.TestCase):
         results = self.client.search(title="Nonexistent Paper")
         self.assertEqual(len(results), 0)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_search_empty_query(self, mock_request):
         """Test search with empty query."""
         results = self.client.search()
@@ -293,8 +293,8 @@ class TestCrossrefClient(unittest.TestCase):
         # Should not make any API calls
         mock_request.assert_not_called()
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
-    @patch('pdf_metadata_manager.core.crossref_client.time.sleep')
+    @patch('papertag.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.time.sleep')
     def test_retry_on_connection_error(self, mock_sleep, mock_request):
         """Test retry logic on connection errors."""
         # First two attempts fail, third succeeds
@@ -312,8 +312,8 @@ class TestCrossrefClient(unittest.TestCase):
         # Verify exponential backoff (includes rate limiting sleeps)
         self.assertGreaterEqual(mock_sleep.call_count, 2)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
-    @patch('pdf_metadata_manager.core.crossref_client.time.sleep')
+    @patch('papertag.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.time.sleep')
     def test_retry_exhausted(self, mock_sleep, mock_request):
         """Test exception raised when all retries exhausted."""
         # All attempts fail
@@ -326,7 +326,7 @@ class TestCrossrefClient(unittest.TestCase):
         # Should have tried the configured number of times
         self.assertEqual(mock_request.call_count, self.client.retries)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_no_retry_on_client_error(self, mock_request):
         """Test no retry on 4xx client errors."""
         mock_response = Mock()
@@ -341,8 +341,8 @@ class TestCrossrefClient(unittest.TestCase):
         # Should only try once (no retries on client errors)
         self.assertEqual(mock_request.call_count, 1)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
-    @patch('pdf_metadata_manager.core.crossref_client.time.sleep')
+    @patch('papertag.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.time.sleep')
     def test_retry_on_server_error(self, mock_sleep, mock_request):
         """Test retry on 5xx server errors."""
         # First attempt returns 500, second succeeds
@@ -357,9 +357,9 @@ class TestCrossrefClient(unittest.TestCase):
         # Verify retry happened
         self.assertEqual(mock_request.call_count, 2)
 
-    @patch('pdf_metadata_manager.core.crossref_client.time.time')
-    @patch('pdf_metadata_manager.core.crossref_client.time.sleep')
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.time.time')
+    @patch('papertag.core.crossref_client.time.sleep')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_rate_limiting(self, mock_request, mock_sleep, mock_time):
         """Test rate limiting between requests."""
         # Mock time progression
@@ -380,7 +380,7 @@ class TestCrossrefClient(unittest.TestCase):
         # Second request: should sleep because < 0.5s elapsed
         self.assertGreater(mock_sleep.call_count, 0)
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_success(self, mock_request):
         """Test fetching metadata by DOI."""
         mock_response = Mock()
@@ -410,7 +410,7 @@ class TestCrossrefClient(unittest.TestCase):
         self.assertEqual(metadata['year'], '2020')
         self.assertEqual(metadata['journal'], 'Nature')
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_empty_container_title(self, mock_request):
         """Preprints (e.g. OSF) return 'container-title': [] rather than
         omitting the key entirely; indexing [0] on that empty list must not
@@ -440,7 +440,7 @@ class TestCrossrefClient(unittest.TestCase):
         self.assertEqual(metadata['title'], 'Some Preprint Title')
         self.assertIsNone(metadata['journal'])
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_clean_doi(self, mock_request):
         """Test fetching metadata cleans DOI from URL."""
         mock_response = Mock()
@@ -460,7 +460,7 @@ class TestCrossrefClient(unittest.TestCase):
         # Should have extracted DOI from URL
         self.assertIn('10.1234/test', mock_request.call_args[0][1])
 
-    @patch('pdf_metadata_manager.core.crossref_client.requests.request')
+    @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_not_found(self, mock_request):
         """Test fetching metadata for non-existent DOI."""
         mock_response = Mock()

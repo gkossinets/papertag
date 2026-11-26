@@ -273,8 +273,10 @@ class MetadataUpdater:
                             xmp_meta['dc:title'] = metadata.title
 
                         if metadata.authors:
-                            # Split authors and convert to list
-                            author_list = [author.strip() for author in re.split(r'[;,]', metadata.authors)]
+                            # Split only on ';' (the separator we write): commas
+                            # appear inside "Last, First" names, and pikepdf syncs
+                            # dc:creator back into /Author on save.
+                            author_list = [a.strip() for a in metadata.authors.split(';') if a.strip()]
                             xmp_meta['dc:creator'] = author_list
 
                         # Add journal and DOI to description
@@ -406,11 +408,11 @@ class MetadataUpdater:
 
         Rules:
         - Single author: "Smith - 2020 - Title.pdf"
-        - Two authors: "Smith & Jones - 2020 - Title.pdf"
+        - Two authors: "Smith and Jones - 2020 - Title.pdf"
         - Three+ authors: "Smith et al. - 2020 - Title.pdf"
         - Sanitize: remove quotes, apostrophes, commas, parentheses
         - Replace & with "and"
-        - Truncate long titles (>100 chars) with "..."
+        - Truncate long titles (>100 chars) to 97 chars
 
         Args:
             metadata: Metadata to use for filename
@@ -426,7 +428,7 @@ class MetadataUpdater:
             ...     year="2020"
             ... )
             >>> updater.generate_zotero_filename(metadata, "original.pdf")
-            'Smith & Johnson - 2020 - Machine Learning.pdf'
+            'Smith and Johnson - 2020 - Machine Learning.pdf'
         """
         try:
             # Check if metadata is incomplete
@@ -491,7 +493,8 @@ class MetadataUpdater:
 
             # Truncate title if too long
             if len(title) > 100:
-                title = title[:97] + "..."
+                # No ellipsis: sanitization strips trailing dots
+                title = title[:97]
 
             # Create raw filename
             raw_filename = f"{author_part} - {year} - {title}"
@@ -538,7 +541,7 @@ class MetadataUpdater:
         """
         Rename file and handle conflicts.
 
-        If a file with the new name already exists, appends (2), (3), etc.
+        If a file with the new name already exists, appends (1), (2), etc.
         to the filename until a unique name is found.
 
         Args:
@@ -577,7 +580,7 @@ class MetadataUpdater:
             # Build new path
             new_path = os.path.join(target_dir, new_filename)
 
-            # Handle conflicts by adding (2), (3), etc.
+            # Handle conflicts by adding (1), (2), etc.
             counter = 1
             base_path = new_path
             while os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(old_path):

@@ -8,8 +8,8 @@ through the confirmation step.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from pdf_metadata_manager.pdf_metadata_manager import PDFMetadataManager
-from pdf_metadata_manager.core import CrossrefMatch
+from papertag.cli import PDFMetadataManager
+from papertag.core import CrossrefMatch
 
 # Use an absolute path so process_single_pdf's Path(...).resolve() does not
 # depend on the current working directory. Other test modules chdir into a

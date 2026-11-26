@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "papertag"
+dynamic = ["version"]
+description = "Look up academic PDFs on Crossref, write correct metadata into them, and rename them Zotero-style."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "pikepdf>=8.0",
+    "PyPDF2>=3.0",
+    "requests>=2.31",
+    "pathvalidate>=3.0",
+]
+
+[project.optional-dependencies]
+ocr = ["pytesseract>=0.3.10", "pdf2image>=1.16.3"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+papertag = "papertag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["papertag*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "papertag.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

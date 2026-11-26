@@ -9,27 +9,13 @@ from unittest.mock import patch, MagicMock, call
 from io import StringIO
 import sys
 
-# Import the module to test
-try:
-    from pdf_metadata_manager.ui.interactive import (
-        InteractiveUI,
-        UserQuitError,
-        CrossrefMatch,
-        FilenameHints,
-        MetadataUpdate
-    )
-except ImportError:
-    import sys
-    import os
-    # Add parent directory to path for testing
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from ui.interactive import (
-        InteractiveUI,
-        UserQuitError,
-        CrossrefMatch,
-        FilenameHints,
-        MetadataUpdate
-    )
+from papertag.ui.interactive import (
+    InteractiveUI,
+    UserQuitError,
+    CrossrefMatch,
+    FilenameHints,
+    MetadataUpdate
+)
 
 
 class TestInteractiveUI(unittest.TestCase):

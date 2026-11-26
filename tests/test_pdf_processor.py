@@ -9,10 +9,7 @@ import sys
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from core.pdf_processor import (
+from papertag.core.pdf_processor import (
     PDFProcessor,
     PDFMetadata,
     PDFNotFoundError,
@@ -104,7 +101,7 @@ class TestPDFProcessor(unittest.TestCase):
         journal = self.processor._extract_journal(lines)
         self.assertIsNone(journal)
 
-    @patch('core.pdf_processor.PdfReader')
+    @patch('papertag.core.pdf_processor.PdfReader')
     def test_extract_text_with_pypdf2(self, mock_reader):
         """Test text extraction using PyPDF2."""
         # Mock PdfReader

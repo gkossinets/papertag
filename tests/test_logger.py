@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from pdf_metadata_manager.utils.logger import SessionLogger
+from papertag.utils.logger import SessionLogger
 
 
 class TestSessionLogger:

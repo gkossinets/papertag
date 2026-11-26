@@ -15,6 +15,8 @@ from urllib.parse import quote_plus
 
 import requests
 
+from papertag import __version__
+
 
 # Custom exceptions
 class CrossrefConnectionError(Exception):
@@ -83,7 +85,7 @@ class CrossrefClient:
 
         # User-Agent for polite pool
         self.headers = {
-            'User-Agent': f'PdfMetadataManager/1.0 (mailto:{email})'
+            'User-Agent': f'papertag/{__version__} (mailto:{email})'
         }
 
     def _wait_for_rate_limit(self):

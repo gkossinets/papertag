@@ -6,7 +6,7 @@ and ensures proper confidence scoring.
 """
 
 import unittest
-from pdf_metadata_manager.core.filename_parser import parse_filename, FilenameHints
+from papertag.core.filename_parser import parse_filename, FilenameHints
 
 
 class TestFilenameParser(unittest.TestCase):
