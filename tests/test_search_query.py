@@ -13,7 +13,7 @@ HINTS = FilenameHints(author="Moreno", year="2019", title="Groundwater Recharge"
 
 def test_filename_title_beats_a_line_order_guess():
     meta = PDFMetadata(title="ORIGINAL ARTICLE", title_source="text", authors="Ana Moreno")
-    assert search_query(meta, HINTS) == ("Groundwater Recharge", "Moreno", "2019", True)
+    assert search_query(meta, HINTS) == ("Groundwater Recharge", "Moreno", "2019", True, False)
 
 
 def test_line_order_guess_beats_a_loose_filename():
@@ -35,7 +35,7 @@ def test_embedded_title_beats_filename():
 def test_filename_fills_gaps():
     meta = PDFMetadata()
     hints = FilenameHints(author="Moreno", year="2019", title="Groundwater Recharge", confidence=0.9)
-    assert search_query(meta, hints) == ("Groundwater Recharge", "Moreno", "2019", True)
+    assert search_query(meta, hints) == ("Groundwater Recharge", "Moreno", "2019", True, False)
 
 
 def test_filename_author_beats_page_text_author():

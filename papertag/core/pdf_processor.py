@@ -63,6 +63,9 @@ class PDFMetadata:
     # was put there by whoever produced the file.
     doi_source: Optional[str] = None
     title_source: Optional[str] = None
+    # Page 1 carries a preprint server's stamp; on a score tie the preprint
+    # record then beats the published article.
+    preprint: bool = False
 
 
 @dataclass
@@ -184,6 +187,18 @@ class PDFProcessor:
     MIN_PLAUSIBLE_FONT_SIZE = 2.0
     TITLE_MAX_CHARS = 300
 
+    # A preprint's own stamps, not mentions: a published paper's first page
+    # may cite "arXiv preprint arXiv:2101.00001" or link to osf.io for data.
+    PREPRINT_PATTERNS = [
+        r'arXiv:\d{4}\.\d{4,5}v\d+\s*\[[\w.-]+\]',      # margin stamp, with version
+        r'\b(?:bio|med)Rxiv preprint\b',                  # page header
+        r'(?im)^\s*preprint\b(?!s)',                       # "Preprint as of ...", "Preprint submitted to ..."
+        r'\bpreprint\b[^.\n]{0,40}\bnot\b[^.\n]{0,20}\bpeer[- ]reviewed',
+        r'ssrn\.com/abstract=',                            # SSRN download footer
+        r'10\.31234/osf\.io/',                              # PsyArXiv / OSF Preprints DOI
+        r'10\.21203/rs\.',                                  # Research Square DOI
+    ]
+
     def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
         Initialize PDF processor.
@@ -241,6 +256,7 @@ class PDFProcessor:
                 log.debug("Little or no extractable text and OCR is disabled")
 
         metadata.extracted_text = text
+        metadata.preprint = any(re.search(p, text, re.IGNORECASE) for p in self.PREPRINT_PATTERNS)
 
         log.debug("Extracted %d characters of text", len(text))
 

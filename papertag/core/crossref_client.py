@@ -507,14 +507,18 @@ class CrossrefClient:
         return f"https://api.crossref.org/works?{urlencode(params)}"
 
     @staticmethod
-    def rank_key(score: float, item: Dict[str, Any]) -> Tuple[float, bool]:
+    def rank_key(score: float, item: Dict[str, Any],
+                 prefer_preprint: bool = False) -> Tuple[float, bool]:
         """Sort key for a scored Crossref item, highest first.
 
-        On a tie, the published record beats a preprint (posted-content) of
-        the same work; Crossref's order used to decide, and batch mode picked
-        the preprint for a PDF carrying the article's DOI.
+        On a tie between a published record and a preprint (posted-content)
+        of the same work, the one matching the PDF wins: the article for a
+        publisher PDF, the preprint for a PDF with a preprint server's stamp.
+        Crossref's order used to decide, and batch mode picked a preprint
+        for a PDF carrying the article's DOI.
         """
-        return score, item.get('type') != 'posted-content'
+        is_preprint = item.get('type') == 'posted-content'
+        return score, is_preprint == prefer_preprint
 
     def search(
         self,
@@ -523,6 +527,7 @@ class CrossrefClient:
         year: Optional[str] = None,
         max_results: int = 5,
         author_reliable: bool = True,
+        prefer_preprint: bool = False,
     ) -> List[CrossrefMatch]:
         """
         Search Crossref for matching publications.
@@ -533,6 +538,8 @@ class CrossrefClient:
             year: Publication year
             max_results: Maximum number of results to return
             author_reliable: False when the author is a guess (see search_url)
+            prefer_preprint: The PDF is a preprint; on a score tie, prefer a
+                preprint record over the published article (see rank_key)
 
         Returns:
             List of CrossrefMatch objects sorted by score (highest first)
@@ -574,7 +581,7 @@ class CrossrefClient:
                     score=score
                 )
 
-                ranked.append((self.rank_key(score, item), match))
+                ranked.append((self.rank_key(score, item, prefer_preprint), match))
 
         ranked.sort(key=lambda entry: entry[0], reverse=True)
         return [match for _, match in ranked[:max_results]]

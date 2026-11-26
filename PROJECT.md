@@ -93,9 +93,14 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   `query.bibliographic` instead. Filename authors are reliable. `first_author_surname` handles
   "X et al.", "X and Y", "Last, First", marked author lines and Vancouver "Moreno A" (the old code
   sent the last word: "al.", or the second author).
-- 2026-11-26: On equal scores the published record beats a preprint (`type` posted-content) of the
-  same work (`CrossrefClient.rank_key`, also used by the benchmark replay). The fielded query
-  ranked preprints first more often, and batch mode accepted them for article PDFs.
+- 2026-11-26: On equal scores between a published record and a preprint (`type` posted-content)
+  of the same work, the one matching the PDF wins (user's choice): the preprint when page 1 has a
+  preprint server's own stamp (`PDFMetadata.preprint`), else the article (`CrossrefClient.rank_key`,
+  also used by the benchmark replay). Crossref's order used to decide; the fielded query ranked
+  preprints first more often, and batch mode accepted one for an article PDF. Stamps, not
+  mentions: arXiv's margin stamp with version, bio/medRxiv headers, a line starting "Preprint",
+  "preprint ... not peer reviewed", the SSRN footer, PsyArXiv/OSF and Research Square DOIs. Not
+  "arXiv preprint arXiv:..." (a citation) or osf.io (data links). Flags 6 of the 400 sampled PDFs.
 
 ## Roadmap
 

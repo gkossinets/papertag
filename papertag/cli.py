@@ -45,12 +45,14 @@ class SearchQuery(NamedTuple):
 
     author_reliable is False when the author is the page-text guess, which
     held the right name for about one file in six; Crossref then uses it to
-    rank, not to match authors.
+    rank, not to match authors. preprint is True when the PDF carries a
+    preprint server's stamp, so a tie goes to the preprint record.
     """
     title: Optional[str]
     author: Optional[str]
     year: Optional[str]
     author_reliable: bool
+    preprint: bool = False
 
 
 def search_query(pdf_metadata: PDFMetadata, filename_hints: FilenameHints) -> SearchQuery:
@@ -79,7 +81,7 @@ def search_query(pdf_metadata: PDFMetadata, filename_hints: FilenameHints) -> Se
     else:
         author, author_reliable = pdf_metadata.authors, False
     return SearchQuery(title, author, pdf_metadata.year or filename_hints.year,
-                       author_reliable=author_reliable)
+                       author_reliable=author_reliable, preprint=pdf_metadata.preprint)
 
 
 class PDFMetadataManager:
@@ -397,7 +399,8 @@ class PDFMetadataManager:
         """Search Crossref for the top five matches to `query`."""
         return self.crossref_client.search(
             title=query.title, author=query.author, year=query.year,
-            max_results=5, author_reliable=query.author_reliable)
+            max_results=5, author_reliable=query.author_reliable,
+            prefer_preprint=query.preprint)
 
     def _match_to_metadata_update(self, match: CrossrefMatch) -> MetadataUpdate:
         """Convert CrossrefMatch to MetadataUpdate."""

@@ -85,7 +85,8 @@ def judge(client: CachingClient, query: SearchQuery, truth: str,
     if not (query.title or query.author or query.year):
         return {"outcome": "no_query", "query": query}
     matches = client.search(title=query.title, author=query.author, year=query.year,
-                            author_reliable=query.author_reliable)
+                            author_reliable=query.author_reliable,
+                            prefer_preprint=query.preprint)
     found = any(i.get("DOI", "").lower() == truth for i in client.last_items)
     top = matches[0] if matches else None
     if top and top.score >= threshold:
