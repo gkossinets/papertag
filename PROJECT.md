@@ -6,13 +6,14 @@
 papertag/
   cli.py                  argparse entry point + PDFMetadataManager orchestrator
   core/filename_parser.py hints (author, year, title) from existing filenames
-  core/pdf_processor.py   page-1 text extraction (PyPDF2), OCR fallback, DOI/title heuristics
+  core/pdf_processor.py   page-1 text extraction (pypdf), OCR fallback, DOI/title heuristics
   core/crossref_client.py Crossref search + DOI lookup, retry/backoff, match scoring
   core/metadata_updater.py write docinfo + XMP (pikepdf), Zotero-style filenames, rename
   ui/interactive.py       prompts: match selection, confirmation, error handling
   utils/logger.py         opt-in JSON session log (--log)
   utils/timestamp_utils.py preserve mtime/atime (+ macOS creation time via SetFile)
-tests/                    pytest; run `python -m pytest`
+tests/                    pytest; run `python -m pytest` (PAPERTAG_NETWORK_TESTS=1 for live Crossref)
+  pdf_fixtures.py         builds real one-page text PDFs with pikepdf
 ```
 
 Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref search
@@ -26,17 +27,22 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
 - Two-author filenames use `and`, not `&` (sanitizer replaces `&`). Conflicts get ` (1)`.
 - Long titles are cut to 97 chars with no ellipsis (sanitization would strip trailing dots).
 - XMP `dc:creator` is split on `;` only, so "Last, First" names survive the XMP->docinfo sync.
+- 2026-11-26: Exit codes: 0 = no failures (skips are not failures), 1 = any file failed or bad
+  arguments, 130 = interrupted.
+- 2026-11-26: No fallback PDF writer. If pikepdf can't write, raise `PDFUpdateError` and leave the
+  file untouched; rebuilding with another library loses bookmarks/XMP.
+- 2026-11-26: Library modules use `logging.getLogger(__name__)` and never print. `cli.configure_logging`
+  sends the `papertag` logger to stderr (INFO default, DEBUG with -v, ERROR with -q) and holds
+  `pypdf` at ERROR unless -v. UI prompts/progress stay on stdout. No emoji; the confidence stars
+  and box-drawing borders stay.
+- 2026-11-26: `CrossrefClient.fetch_metadata` returns `CrossrefMatch` (score 1.0, optional `isbn`).
 
 ## Roadmap
 
 1. ~~Foundation: rename, pyproject, green tests, remove dead code.~~ (done 2026-11-26)
-2. Correctness
-   - accept multiple paths (`nargs='+'`) so shell-expanded `*.pdf` works
-   - exit codes: 1 if any file failed, 130 on interrupt; `--version`
-   - pikepdf has no `Page.extract_text` (dead path) -> switch text extraction to `pypdf`
-   - remove the PyPDF2 write fallback (drops bookmarks/XMP); fail loudly instead
-   - `fetch_metadata` should return `CrossrefMatch`; drop `_metadata_dict_to_match` dual format
-   - diagnostics to stderr via `logging`; no prints in library modules; drop emoji
+2. ~~Correctness: multiple input paths, exit codes, `--version`, pypdf extraction, no lossy
+   write fallback, `fetch_metadata` -> `CrossrefMatch` (+ ISBN), logging to stderr, no emoji.~~
+   (done 2026-11-26)
 3. Algorithm
    - read DOI/title already embedded in the PDF (XMP `prism:doi`, `pdfx:doi`, `crossmark:DOI`,
      `dc:identifier`, docinfo `/Title`) before text heuristics
@@ -51,3 +57,7 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
    - `--dry-run`; skip already-processed files (`--force` to override)
    - side-by-side current vs new metadata; `--undo LOG`
    - make the Crossref email optional
+   - progress display emits cursor-up escape codes (`\x1b[F\x1b[K`) even when stdout is not a
+     TTY; only redraw when `sys.stdout.isatty()`
+   - batch with an unreadable PDF prints the error on stderr before that file's stdout header when
+     piped (stdout is block-buffered); consider flushing stdout before logging errors
