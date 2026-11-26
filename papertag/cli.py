@@ -9,10 +9,10 @@ or batch processing modes.
 import argparse
 import os
 import sys
-import signal
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from papertag import __version__
 from papertag.core import (
     PDFProcessor,
     PDFMetadata,
@@ -554,14 +554,18 @@ class PDFMetadataManager:
 
         return 'completed'
 
-    def process_files(self, files: List[str]) -> None:
+    def process_files(self, files: List[str]) -> bool:
         """
         Process multiple PDF files.
 
         Args:
             files: List of PDF file paths
+
+        Returns:
+            True if processing was interrupted by the user, False otherwise.
         """
         total = len(files)
+        interrupted = False
 
         if not self.ui.quiet:
             print(f"\nProcessing {total} PDF file{'s' if total != 1 else ''}...\n")
@@ -582,6 +586,7 @@ class PDFMetadataManager:
                     )
 
         except (KeyboardInterrupt, UserQuitError):
+            interrupted = True
             if not self.ui.quiet:
                 print("\n\n⚠️  Processing interrupted by user")
 
@@ -596,40 +601,52 @@ class PDFMetadataManager:
                     log_path=self.logger.log_path
                 )
 
+        return interrupted
 
-def collect_pdf_files(input_path: str, recursive: bool = False) -> List[str]:
+
+def _expand_input(input_path: str, recursive: bool) -> List[str]:
+    """Expand one file, directory, or glob pattern into PDF paths."""
+    path = Path(input_path)
+    if path.is_file():
+        return [str(path)] if path.suffix.lower() == '.pdf' else []
+    if path.is_dir():
+        pattern = '**/*' if recursive else '*'
+        return [str(p) for p in path.glob(pattern)
+                if p.is_file() and p.suffix.lower() == '.pdf']
+    # Quoted glob patterns reach us unexpanded; expand them ourselves.
+    import glob
+    return [p for p in glob.glob(input_path, recursive=recursive)
+            if p.lower().endswith('.pdf')]
+
+
+def collect_pdf_files(inputs: List[str], recursive: bool = False) -> List[str]:
     """
-    Collect PDF files from input path.
+    Collect PDF files from one or more input paths.
 
     Args:
-        input_path: File or directory path, or glob pattern
+        inputs: Files, directories, or glob patterns
         recursive: Search directories recursively
 
     Returns:
-        List of PDF file paths
+        Sorted list of unique PDF file paths
     """
-    path = Path(input_path)
-    files = []
-
-    if path.is_file():
-        if path.suffix.lower() == '.pdf':
-            files.append(str(path))
-    elif path.is_dir():
-        if recursive:
-            files.extend(str(p) for p in path.rglob('*.pdf'))
-        else:
-            files.extend(str(p) for p in path.glob('*.pdf'))
-    else:
-        # Try as glob pattern
-        import glob
-        files.extend(glob.glob(input_path, recursive=recursive))
-
+    files = set()
+    for input_path in inputs:
+        files.update(_expand_input(input_path, recursive))
     return sorted(files)
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Parse command-line arguments."""
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv: Argument list (default: sys.argv[1:])
+
+    Returns:
+        Parsed arguments namespace.
+    """
     parser = argparse.ArgumentParser(
+        prog='papertag',
         description='Update PDF metadata from academic sources',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
@@ -645,10 +662,17 @@ Environment Variables:
         '''
     )
 
-    # Required arguments
     parser.add_argument(
-        'input',
-        help='PDF file, directory, or glob pattern to process'
+        'inputs',
+        nargs='+',
+        metavar='PATH',
+        help='PDF files, directories, or glob patterns to process'
+    )
+
+    parser.add_argument(
+        '--version', '-V',
+        action='version',
+        version=f'%(prog)s {__version__}'
     )
 
     # Optional arguments
@@ -727,7 +751,7 @@ Environment Variables:
         help='Minimal output (errors and summary only)'
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
@@ -749,10 +773,10 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
                     "Or use --from-filename to set metadata from the filename without Crossref."
                 )
 
-    # Check input exists
-    input_path = Path(args.input)
-    if not input_path.exists() and not any(c in args.input for c in ['*', '?']):
-        return False, f"Error: Input path does not exist: {args.input}"
+    # Check inputs exist (glob patterns are checked when expanded)
+    for input_path in args.inputs:
+        if not Path(input_path).exists() and not any(c in input_path for c in '*?['):
+            return False, f"Error: Input path does not exist: {input_path}"
 
     # Validate numeric arguments
     if args.ocr_pages < 1:
@@ -764,25 +788,34 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-def main():
-    """Main entry point."""
-    # Parse arguments
-    args = parse_arguments()
+# Exit codes: 0 = no failures, 1 = a file failed or bad configuration,
+# 130 = interrupted (the shell convention for SIGINT: 128 + 2).
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_INTERRUPTED = 130
 
-    # Validate configuration
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main entry point.
+
+    Args:
+        argv: Argument list (default: sys.argv[1:])
+
+    Returns:
+        Process exit code.
+    """
+    args = parse_arguments(argv)
+
     valid, error_msg = validate_config(args)
     if not valid:
         print(error_msg, file=sys.stderr)
-        sys.exit(1)
+        return EXIT_FAILURE
 
-    # Collect files to process
-    files = collect_pdf_files(args.input, recursive=args.recursive)
-
+    files = collect_pdf_files(args.inputs, recursive=args.recursive)
     if not files:
-        print(f"Error: No PDF files found at: {args.input}", file=sys.stderr)
-        sys.exit(1)
+        print(f"Error: No PDF files found in: {' '.join(args.inputs)}", file=sys.stderr)
+        return EXIT_FAILURE
 
-    # Initialize manager
     manager = PDFMetadataManager(
         email=args.email,
         use_ocr=not args.no_ocr,
@@ -797,15 +830,14 @@ def main():
         from_filename=args.from_filename
     )
 
-    # Set up signal handler for graceful shutdown
-    def signal_handler(sig, frame):
-        raise KeyboardInterrupt()
+    interrupted = manager.process_files(files)
 
-    signal.signal(signal.SIGINT, signal_handler)
-
-    # Process files
-    manager.process_files(files)
+    if interrupted:
+        return EXIT_INTERRUPTED
+    if manager.stats['failed']:
+        return EXIT_FAILURE
+    return EXIT_OK
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
