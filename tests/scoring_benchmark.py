@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from papertag.core.crossref_client import CrossrefClient
+
 BENCHMARK = Path(__file__).parent / "data" / "crossref_benchmark.json.gz"
 BATCH_THRESHOLD = 0.80
 
@@ -87,8 +89,10 @@ def evaluate(cases: List[Dict[str, Any]], score: ScoreFn,
         items = case["items"]
         if not items:
             continue
-        scored = sorted(((score(i, case["query"]), i["DOI"].lower()) for i in items),
-                        key=lambda pair: pair[0], reverse=True)
+        # Rank as CrossrefClient.search does, tie-break included.
+        ranked = sorted(((CrossrefClient.rank_key(score(i, case["query"]), i), i["DOI"].lower())
+                         for i in items), key=lambda pair: pair[0], reverse=True)
+        scored = [(key[0], doi) for key, doi in ranked]
         truth = case["true_doi"]
         for key in (case["variant"], "all"):
             s = stats[key]
@@ -129,7 +133,6 @@ def report(stats: Dict[str, VariantStats]) -> str:
 
 def papertag_score() -> ScoreFn:
     """papertag's current scoring as a ScoreFn."""
-    from papertag.core.crossref_client import CrossrefClient
     client = CrossrefClient(email="benchmark@example.invalid")
     return lambda item, q: client._calculate_match_score(
         item, title=q["title"], author=q["author"], year=q["year"])

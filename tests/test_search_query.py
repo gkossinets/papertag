@@ -13,7 +13,7 @@ HINTS = FilenameHints(author="Moreno", year="2019", title="Groundwater Recharge"
 
 def test_filename_title_beats_a_line_order_guess():
     meta = PDFMetadata(title="ORIGINAL ARTICLE", title_source="text", authors="Ana Moreno")
-    assert search_query(meta, HINTS) == ("Groundwater Recharge", "Moreno", "2019")
+    assert search_query(meta, HINTS) == ("Groundwater Recharge", "Moreno", "2019", True)
 
 
 def test_line_order_guess_beats_a_loose_filename():
@@ -35,7 +35,7 @@ def test_embedded_title_beats_filename():
 def test_filename_fills_gaps():
     meta = PDFMetadata()
     hints = FilenameHints(author="Moreno", year="2019", title="Groundwater Recharge", confidence=0.9)
-    assert search_query(meta, hints) == ("Groundwater Recharge", "Moreno", "2019")
+    assert search_query(meta, hints) == ("Groundwater Recharge", "Moreno", "2019", True)
 
 
 def test_filename_author_beats_page_text_author():
@@ -50,3 +50,19 @@ def test_page_text_author_fills_a_loose_filename():
     hints = FilenameHints(author="draft", year=None, title=None, confidence=0.6)
     meta = PDFMetadata(authors="Ana Moreno")
     assert search_query(meta, hints)[1] == "Ana Moreno"
+
+
+def test_page_text_author_is_marked_unreliable():
+    hints = FilenameHints(author="draft", year=None, title=None, confidence=0.6)
+    query = search_query(PDFMetadata(authors="Ana Moreno"), hints)
+    assert query.author_reliable is False
+
+
+def test_filename_author_is_reliable():
+    query = search_query(PDFMetadata(authors="Uppsala University, Sweden"), HINTS)
+    assert query.author == "Moreno" and query.author_reliable is True
+
+
+def test_filename_author_is_reliable_even_when_the_page_shows_the_same_text():
+    query = search_query(PDFMetadata(authors="Moreno"), HINTS)
+    assert query.author == "Moreno" and query.author_reliable is True

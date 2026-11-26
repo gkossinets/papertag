@@ -28,13 +28,13 @@ import sys
 import warnings
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from papertag import __version__  # noqa: E402
-from papertag.cli import collect_pdf_files, search_query  # noqa: E402
+from papertag.cli import SearchQuery, collect_pdf_files, search_query  # noqa: E402
 from papertag.core import FilenameHints, PDFMetadata, PDFProcessor, parse_filename  # noqa: E402
 from papertag.core.crossref_client import CrossrefClient  # noqa: E402
 
@@ -79,13 +79,13 @@ def publisher_doi(processor: PDFProcessor, path: str) -> Optional[str]:
     return None
 
 
-def judge(client: CachingClient, query: Tuple[Optional[str], ...], truth: str,
+def judge(client: CachingClient, query: SearchQuery, truth: str,
           threshold: float) -> Dict[str, Any]:
     """Run one search and classify what batch mode would do."""
-    title, author, year = query
-    if not (title or author or year):
+    if not (query.title or query.author or query.year):
         return {"outcome": "no_query", "query": query}
-    matches = client.search(title=title, author=author, year=year)
+    matches = client.search(title=query.title, author=query.author, year=query.year,
+                            author_reliable=query.author_reliable)
     found = any(i.get("DOI", "").lower() == truth for i in client.last_items)
     top = matches[0] if matches else None
     if top and top.score >= threshold:

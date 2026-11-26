@@ -249,7 +249,8 @@ Exit status:
   the first page gives the most reliable result.
 - Without a DOI, batch mode can pick the wrong one of two papers by the same
   authors whose long titles differ in a single word, or one of two records of
-  the same work (a preprint and the article).
+  the same work (an abstract and the paper). Between a preprint and the
+  article that score the same, it picks the article.
 - Only Crossref is searched. Papers with no Crossref record (most arXiv-only
   preprints, many books, theses) need `--from-filename` or a manual DOI.
 

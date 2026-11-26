@@ -8,6 +8,10 @@ At step 3.2 (with derived variants, 553 queries): 389 right accepts, 2 wrong
 (two records of the same study, once per variant), 20 of 485 accepts when the
 right work is absent, nearly all duplicate records of the same work (preprint,
 abstract, reprint). The old scoring: 222 right, 0 wrong, 13 of 485.
+
+At step 3.4 the same queries were re-issued in the fielded form
+(query.bibliographic + query.author): the right work is among the candidates
+for 502 (was 485); 393 right accepts, the same 2 wrong, 22 of 497 absent.
 """
 
 import pytest
@@ -50,3 +54,13 @@ def test_single_kind_of_evidence_never_accepted(stats, variant):
 def test_right_work_ranked_first(stats):
     s = stats["all"]
     assert s.top1 >= 0.94 * s.found, report(stats)
+
+
+def test_replay_ranks_like_papertag():
+    """A tie between an article and its preprint goes to the article, as in search()."""
+    items = [{"DOI": "10.31234/osf.io/abcde", "type": "posted-content"},
+             {"DOI": "10.1234/valleys.1", "type": "journal-article"}]
+    case = {"id": "x#filename", "variant": "filename", "true_doi": "10.1234/valleys.1",
+            "query": {"title": "t", "author": "a", "year": "2019"}, "items": items}
+    stats = evaluate([case], lambda item, q: 0.9)
+    assert stats["all"].accept_right == 1 and stats["all"].accept_wrong == 0

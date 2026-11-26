@@ -64,8 +64,9 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
 - 2026-11-26: `tests/data/crossref_benchmark.json.gz`: 395 recorded Crossref searches from random
   public records (sensitive topics filtered out, including candidates) with known answers, plus
   derived query shapes. `python -m tests.scoring_benchmark` prints batch outcomes;
-  `tests/test_scoring_benchmark.py` guards them. Re-record with `tools/record_crossref_benchmark.py`
-  when the query changes (step 3.4).
+  `tests/test_scoring_benchmark.py` guards them. When the query changes, re-issue the same queries
+  with `tools/record_crossref_benchmark.py --requery` (a plain run samples new works, so results
+  would not compare).
 - 2026-11-26: Crossref 429 responses are retried (Retry-After, capped at 60 s).
 - 2026-11-26: `tools/eval_library.py` evaluates on the user's own PDFs (publisher-embedded DOI as
   the answer, hidden). The query comes from `cli.search_query`, shared with the CLI. It never writes
@@ -84,6 +85,17 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   `Author (Year) Title`) supplies the title when the page title is the line-order guess, and the
   author always: on the held-out files the page-text author held the right surname in 43/283.
 - 2026-11-26: Title blacklist publisher names match whole words (bare `SAGE` rejected "Usage").
+- 2026-11-26: Crossref search (step 3.4) sends `query.bibliographic=<title> <year>` and
+  `query.author=<first author's surname>`, with `select=` limited to the fields scoring and display
+  read, built by `CrossrefClient.search_url`. `query.author` nearly filters: a junk surname from the
+  page-text guess ("University", "of") cut the right paper from the results for 21 of 37 real PDFs.
+  So `cli.SearchQuery.author_reliable` is False for the page-text author, and its surname goes into
+  `query.bibliographic` instead. Filename authors are reliable. `first_author_surname` handles
+  "X et al.", "X and Y", "Last, First", marked author lines and Vancouver "Moreno A" (the old code
+  sent the last word: "al.", or the second author).
+- 2026-11-26: On equal scores the published record beats a preprint (`type` posted-content) of the
+  same work (`CrossrefClient.rank_key`, also used by the benchmark replay). The fielded query
+  ranked preprints first more often, and batch mode accepted them for article PDFs.
 
 ## Roadmap
 
@@ -119,7 +131,14 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       a title split across two sizes (subtitle set smaller or larger) gives one part.
       Next: authors. The page-text author is a line-order guess anchored on the old title guess;
       the block after the font title (smaller type) is the likely author line.
-   4. Crossref `query.bibliographic` / `query.author`, `select=`
+   4. ~~Crossref `query.bibliographic` / `query.author`, `select=`.~~ (done 2026-11-26) Benchmark,
+      same works re-queried: right work among candidates 485 -> 502 of 553, batch right accepts
+      389 -> 393, wrong 2 -> 2 (same case), accepts with the right work absent 20/485 -> 22/497.
+      Real PDFs (37, DOI hidden): papertag 31 -> 32 right, page only 7 -> 7, filename 30; 0 wrong
+      in every row. Compared in an A/B run first: everything in `query.bibliographic` did no
+      better than the plain query; the full author line in `query.author` did slightly better
+      on the benchmark's clean author lines but was not adopted, since real page author lines
+      are mostly not names.
    5. Batch: require margin over runner-up; `--threshold`
    6. Verify a DOI found in page text against the page's title (reference lists contain
       other papers' DOIs)

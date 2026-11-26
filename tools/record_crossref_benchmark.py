@@ -11,6 +11,11 @@ Uses only public Crossref records; sends no email or user data.
 
 Usage:
     python tools/record_crossref_benchmark.py -n 60 -o tests/data/crossref_benchmark.json.gz
+
+When papertag's query changes, re-issue the same queries (same works, so old
+and new results compare) instead of sampling new works:
+    python tools/record_crossref_benchmark.py --requery tests/data/crossref_benchmark.json.gz \
+        -o tests/data/crossref_benchmark.json.gz
 """
 
 import argparse
@@ -133,7 +138,7 @@ def queries_for(work: Dict[str, Any], rng: random.Random) -> List[Dict[str, Opti
     title = full_title(work)
     author_line = ", ".join(f"{a.get('given', '')} {a['family']}".strip() for a in authors[:4])
     first_line = " ".join(title.split()[:8])
-    return [
+    shapes = [
         # Zotero-style filename: first author, year, title.
         {"variant": "filename", "title": title, "author": first, "year": year},
         # Page text: first line of a wrapped title, the author line, no year.
@@ -143,6 +148,47 @@ def queries_for(work: Dict[str, Any], rng: random.Random) -> List[Dict[str, Opti
         # Filename with author and year but no title.
         {"variant": "no_title", "title": None, "author": first, "year": year},
     ]
+    for shape in shapes:
+        shape["author_reliable"] = author_reliable(shape["variant"])
+    return shapes
+
+
+def author_reliable(variant: str) -> bool:
+    """papertag sends a page-text author as a guess (see cli.SearchQuery)."""
+    return variant != "text"
+
+
+QUERY_KEYS = ("title", "author", "year", "author_reliable")
+
+
+def record_case(client: RecordingClient, case_id: str, variant: str, true_doi: str,
+                query: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one query as papertag would and keep what scoring needs."""
+    client.search(title=query["title"], author=query["author"], year=query["year"],
+                  author_reliable=query["author_reliable"])
+    return {
+        "id": case_id,
+        "variant": variant,
+        "true_doi": true_doi,
+        "query": {k: query[k] for k in QUERY_KEYS},
+        "url": client.last_url,
+        # Candidates are dropped too: the fixture is public.
+        "items": [trim(i) for i in client.last_items if not is_sensitive(i)],
+    }
+
+
+def requery(path: Path) -> Dict[str, Any]:
+    """Re-issue every query of an existing fixture with papertag's current search."""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        fixture = json.load(f)
+    client = RecordingClient()
+    cases = []
+    for n, old in enumerate(fixture["cases"], 1):
+        query = {**old["query"]}
+        query.setdefault("author_reliable", author_reliable(old["variant"]))
+        cases.append(record_case(client, old["id"], old["variant"], old["true_doi"], query))
+        print(f"{n}/{len(fixture['cases'])}", file=sys.stderr)
+    return {"seed": fixture.get("seed"), "cases": cases}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -150,7 +196,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("-n", "--works", type=int, default=60, help="works to sample")
     parser.add_argument("-s", "--seed", type=int, default=1)
     parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("--requery", type=Path, metavar="FIXTURE",
+                        help="re-issue this fixture's queries instead of sampling new works")
     args = parser.parse_args(argv)
+
+    if args.requery:
+        write(requery(args.requery), args.output)
+        return 0
 
     rng = random.Random(args.seed)
     works = sample_works(args.works, args.seed)
@@ -158,24 +210,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     cases = []
     for n, work in enumerate(works, 1):
         for q in queries_for(work, rng):
-            client.search(title=q["title"], author=q["author"], year=q["year"])
-            cases.append({
-                "id": f"{work['DOI']}#{q['variant']}",
-                "variant": q["variant"],
-                "true_doi": work["DOI"].lower(),
-                "query": {k: q[k] for k in ("title", "author", "year")},
-                "url": client.last_url,
-                # Candidates are dropped too: the fixture is public.
-                "items": [trim(i) for i in client.last_items if not is_sensitive(i)],
-            })
+            cases.append(record_case(client, f"{work['DOI']}#{q['variant']}", q["variant"],
+                                     work["DOI"].lower(), q))
         print(f"{n}/{len(works)} {work['DOI']}", file=sys.stderr)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(args.output, "wt", encoding="utf-8") as f:
-        json.dump({"seed": args.seed, "cases": cases}, f, ensure_ascii=False,
-                  separators=(",", ":"))
-    print(f"wrote {len(cases)} cases to {args.output}", file=sys.stderr)
+    write({"seed": args.seed, "cases": cases}, args.output)
     return 0
+
+
+def write(fixture: Dict[str, Any], output: Path) -> None:
+    """Save a fixture as compact gzipped JSON."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(output, "wt", encoding="utf-8") as f:
+        json.dump(fixture, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"wrote {len(fixture['cases'])} cases to {output}", file=sys.stderr)
 
 
 if __name__ == "__main__":

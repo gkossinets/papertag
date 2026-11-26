@@ -12,8 +12,8 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
-from urllib.parse import quote_plus
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 import requests
 
@@ -432,12 +432,97 @@ class CrossrefClient:
                     authors.append(author['family'])
         return authors
 
+    @staticmethod
+    def first_author_surname(author: str) -> Optional[str]:
+        """The first author's family name in a filename or page author string.
+
+        Handles "Moreno et al.", "Moreno and Park", "Moreno, Ana",
+        "Ana Moreno1, Lee Park*" and Vancouver-style "Moreno A, Park L".
+
+        Args:
+            author: Author text as papertag found it.
+
+        Returns:
+            The surname, or None if the text holds no name.
+        """
+        text = re.sub(r'\bet\s+al\b\.?', ' ', author)
+        first = re.split(r'\s+(?:and|&)\s+|[;·]', text)[0]
+        first = re.sub(r'[\d*†‡§¶]+', ' ', first)   # affiliation markers
+        parts = [p for p in (part.strip() for part in first.split(',')) if p]
+        if not parts:
+            return None
+        # Initials ("A.", Vancouver "Moreno A") are never the surname.
+        words = [w for w in re.findall(r"[^\W\d_][\w'’-]*", parts[0]) if len(w) > 1]
+        if not words:
+            return None
+        # "Moreno, Ana": one word before the comma is the surname. "Ana Moreno,
+        # Lee Park": the first name in a list ends with the surname.
+        if len(parts) > 1 and len(words) == 1:
+            return words[0]
+        return words[-1]
+
+    # Fields scoring and display read; the rest of a record is not downloaded.
+    SEARCH_SELECT = ("DOI,title,subtitle,author,issued,published-print,published-online,"
+                     "created,container-title,type")
+
+    @classmethod
+    def search_url(cls, title: Optional[str], author: Optional[str], year: Optional[str],
+                   rows: int, author_reliable: bool = True) -> Optional[str]:
+        """Build the Crossref search request for papertag's evidence.
+
+        The title and year go to query.bibliographic, which Crossref ranks
+        like a citation; the first author's surname goes to query.author,
+        which matches contributor names only. On the recorded benchmark this
+        found the right work among the candidates more often than one plain
+        query, most of all for weak evidence (author and year, no title).
+
+        Args:
+            title: Title text, if any. All-caps titles are sent in title case.
+            author: Author text as found (filename, page line); only the first
+                author's surname is sent.
+            year: Publication year, if any.
+            rows: Number of results to ask for.
+            author_reliable: False for a guess (page-text author line). Its
+                surname then joins query.bibliographic instead: query.author
+                nearly filters, and a wrong "surname" ("University") pushed
+                the right paper out of the results.
+
+        Returns:
+            The request URL, or None when there is nothing to search with.
+        """
+        if title and title.isupper():
+            title = title.title()
+        surname = cls.first_author_surname(author) if author else None
+        field_author = surname if author_reliable else None
+        loose_author = None if author_reliable else surname
+        bibliographic = " ".join(part for part in (title, loose_author, year) if part)
+        params = {}
+        if bibliographic:
+            params["query.bibliographic"] = bibliographic
+        if field_author:
+            params["query.author"] = field_author
+        if not params:
+            return None
+        params.update(rows=rows, select=cls.SEARCH_SELECT)
+        return f"https://api.crossref.org/works?{urlencode(params)}"
+
+    @staticmethod
+    def rank_key(score: float, item: Dict[str, Any]) -> Tuple[float, bool]:
+        """Sort key for a scored Crossref item, highest first.
+
+        On a tie, the published record beats a preprint (posted-content) of
+        the same work; Crossref's order used to decide, and batch mode picked
+        the preprint for a PDF carrying the article's DOI.
+        """
+        return score, item.get('type') != 'posted-content'
+
     def search(
         self,
         title: Optional[str] = None,
         author: Optional[str] = None,
         year: Optional[str] = None,
-        max_results: int = 5
+        max_results: int = 5,
+        author_reliable: bool = True,
     ) -> List[CrossrefMatch]:
         """
         Search Crossref for matching publications.
@@ -447,6 +532,7 @@ class CrossrefClient:
             author: Author name or hint
             year: Publication year
             max_results: Maximum number of results to return
+            author_reliable: False when the author is a guess (see search_url)
 
         Returns:
             List of CrossrefMatch objects sorted by score (highest first)
@@ -455,40 +541,10 @@ class CrossrefClient:
             CrossrefConnectionError: After all retries exhausted
             CrossrefAPIError: For non-retryable API errors
         """
-        # Build query string
-        query_parts = []
-
-        if title:
-            # Handle all-caps titles
-            if title.isupper():
-                title = title.title()
-            query_parts.append(title)
-
-        if author:
-            # Extract last name if possible
-            lastname_match = re.search(r'([A-Z][a-zA-Z\-]+),', author)
-            if lastname_match:
-                query_parts.append(lastname_match.group(1))
-            else:
-                # Try to extract last name from "First Last" format
-                words = author.split()
-                if len(words) > 1:
-                    query_parts.append(words[-1])
-                else:
-                    query_parts.append(author)
-
-        if year:
-            query_parts.append(year)
-
-        if not query_parts:
+        url = self.search_url(title, author, year, rows=max_results * 2,
+                              author_reliable=author_reliable)
+        if url is None:
             return []
-
-        # Limit query to most important parts
-        query = " ".join(query_parts[:3])
-        encoded_query = quote_plus(query)
-
-        # Make API request
-        url = f"https://api.crossref.org/works?query={encoded_query}&rows={max_results * 2}"
 
         try:
             data = self._make_request(url)
@@ -496,7 +552,7 @@ class CrossrefClient:
             raise
 
         # Extract and score results
-        matches = []
+        ranked = []
         if 'message' in data and 'items' in data['message']:
             items = data['message']['items']
 
@@ -518,11 +574,10 @@ class CrossrefClient:
                     score=score
                 )
 
-                matches.append(match)
+                ranked.append((self.rank_key(score, item), match))
 
-        # Sort by score (highest first) and limit results
-        matches.sort(key=lambda m: m.score, reverse=True)
-        return matches[:max_results]
+        ranked.sort(key=lambda entry: entry[0], reverse=True)
+        return [match for _, match in ranked[:max_results]]
 
     def fetch_metadata(self, doi: str) -> CrossrefMatch:
         """

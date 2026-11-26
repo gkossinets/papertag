@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from papertag import __version__
 from papertag.core import (
@@ -40,9 +40,20 @@ log = logging.getLogger(__name__)
 FILENAME_TRUSTED = 0.85
 
 
-def search_query(
-    pdf_metadata: PDFMetadata, filename_hints: FilenameHints
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+class SearchQuery(NamedTuple):
+    """What papertag searches Crossref with.
+
+    author_reliable is False when the author is the page-text guess, which
+    held the right name for about one file in six; Crossref then uses it to
+    rank, not to match authors.
+    """
+    title: Optional[str]
+    author: Optional[str]
+    year: Optional[str]
+    author_reliable: bool
+
+
+def search_query(pdf_metadata: PDFMetadata, filename_hints: FilenameHints) -> SearchQuery:
     """Choose the title, author and year to search Crossref with.
 
     Shared with tools/eval_library.py so it measures the query papertag sends.
@@ -52,7 +63,7 @@ def search_query(
         filename_hints: What was parsed from the filename.
 
     Returns:
-        ``(title, author, year)``; each None when neither source has it.
+        The query; title, author and year are None when neither source has them.
     """
     trusted = filename_hints.confidence >= FILENAME_TRUSTED
     title = pdf_metadata.title or filename_hints.title
@@ -63,10 +74,12 @@ def search_query(
         title = filename_hints.title
     # The page author is always a line-order guess, and on a real library it
     # held the right name for about one file in six.
-    author = pdf_metadata.authors or filename_hints.author
-    if filename_hints.author and trusted:
-        author = filename_hints.author
-    return (title, author, pdf_metadata.year or filename_hints.year)
+    if filename_hints.author and (trusted or not pdf_metadata.authors):
+        author, author_reliable = filename_hints.author, True
+    else:
+        author, author_reliable = pdf_metadata.authors, False
+    return SearchQuery(title, author, pdf_metadata.year or filename_hints.year,
+                       author_reliable=author_reliable)
 
 
 class PDFMetadataManager:
@@ -195,7 +208,7 @@ class PDFMetadataManager:
             if not self.ui.quiet:
                 print("Searching Crossref API...")
 
-            search_title, search_author, search_year = search_query(pdf_metadata, filename_hints)
+            query = search_query(pdf_metadata, filename_hints)
 
             if pdf_metadata.doi:
                 # If we have a DOI, fetch metadata directly
@@ -205,19 +218,9 @@ class PDFMetadataManager:
                     log.warning("Lookup of DOI %s failed, searching instead: %s",
                                 pdf_metadata.doi, e)
                     # Fall back to search
-                    matches = self.crossref_client.search(
-                        title=search_title,
-                        author=search_author,
-                        year=search_year,
-                        max_results=5
-                    )
+                    matches = self._search(query)
             else:
-                matches = self.crossref_client.search(
-                    title=search_title,
-                    author=search_author,
-                    year=search_year,
-                    max_results=5
-                )
+                matches = self._search(query)
 
             if not matches and self.batch_mode:
                 if not self.ui.quiet:
@@ -389,6 +392,12 @@ class PDFMetadataManager:
             log.debug("Traceback:", exc_info=True)
             self.logger.log_failure(pdf_path, f"Unexpected error: {e}")
             return 'failed'
+
+    def _search(self, query: SearchQuery) -> List[CrossrefMatch]:
+        """Search Crossref for the top five matches to `query`."""
+        return self.crossref_client.search(
+            title=query.title, author=query.author, year=query.year,
+            max_results=5, author_reliable=query.author_reliable)
 
     def _match_to_metadata_update(self, match: CrossrefMatch) -> MetadataUpdate:
         """Convert CrossrefMatch to MetadataUpdate."""
