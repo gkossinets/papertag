@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock
 import os
 import time
+import pytest
 import requests
 
 from papertag.core.crossref_client import (
@@ -548,3 +549,42 @@ class TestCrossrefClientIntegration(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --- Rate limiting (HTTP 429) ------------------------------------------------
+
+
+@patch('papertag.core.crossref_client.time.sleep')
+@patch('papertag.core.crossref_client.requests.request')
+def test_429_is_retried_after_retry_after_seconds(mock_request, mock_sleep):
+    """Crossref throttles with 429; a batch run must wait, not fail the file."""
+    mock_request.side_effect = [
+        Mock(status_code=429, text="", headers={"Retry-After": "7"}),
+        Mock(status_code=200, headers={}, json=lambda: {'message': {'items': []}}),
+    ]
+    client = CrossrefClient(email="test@example.com", backoff_factor=0.1)
+    assert client.search(title="Test") == []
+    assert mock_request.call_count == 2
+    assert 7 in [c.args[0] for c in mock_sleep.call_args_list]
+
+
+@patch('papertag.core.crossref_client.time.sleep')
+@patch('papertag.core.crossref_client.requests.request')
+def test_429_without_retry_after_backs_off(mock_request, mock_sleep):
+    mock_request.side_effect = [
+        Mock(status_code=429, text="", headers={}),
+        Mock(status_code=200, headers={}, json=lambda: {'message': {'items': []}}),
+    ]
+    client = CrossrefClient(email="test@example.com", backoff_factor=0.1)
+    assert client.search(title="Test") == []
+    assert mock_request.call_count == 2
+
+
+@patch('papertag.core.crossref_client.time.sleep')
+@patch('papertag.core.crossref_client.requests.request')
+def test_429_on_every_attempt_raises_connection_error(mock_request, mock_sleep):
+    mock_request.return_value = Mock(status_code=429, text="", headers={})
+    client = CrossrefClient(email="test@example.com", retries=3, backoff_factor=0.1)
+    with pytest.raises(CrossrefConnectionError):
+        client.search(title="Test")
+    assert mock_request.call_count == 3

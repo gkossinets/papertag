@@ -6,6 +6,7 @@ the Crossref API, with exponential backoff retry logic, rate limiting, and
 sophisticated matching algorithms.
 """
 
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from urllib.parse import quote_plus
 import requests
 
 from papertag import __version__
+
+log = logging.getLogger(__name__)
 
 
 # Custom exceptions
@@ -96,6 +99,18 @@ class CrossrefClient:
             time.sleep(self.min_request_interval - time_since_last)
         self.last_request_time = time.time()
 
+    # Don't let a server-sent Retry-After stall a batch run indefinitely.
+    MAX_RETRY_AFTER = 60
+
+    @classmethod
+    def _retry_after(cls, response: Any) -> Optional[float]:
+        """Seconds a 429 response asks us to wait, if it says (numeric form only)."""
+        value = (getattr(response, 'headers', None) or {}).get('Retry-After')
+        try:
+            return min(float(value), cls.MAX_RETRY_AFTER) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _make_request(self, url: str, method: str = 'GET') -> Dict[str, Any]:
         """
         Make HTTP request with retry logic and exponential backoff.
@@ -127,6 +142,19 @@ class CrossrefClient:
                 # Handle different HTTP status codes
                 if response.status_code == 200:
                     return response.json()
+                elif response.status_code == 429:
+                    # Throttled: the request was fine, so wait and retry rather
+                    # than failing the file like other 4xx errors.
+                    last_exception = requests.exceptions.RequestException(
+                        "Rate limited by Crossref (HTTP 429)")
+                    if attempt < self.retries - 1:
+                        delay = self._retry_after(response) or self.backoff_factor * (2 ** attempt)
+                        log.info("Crossref rate limit hit; waiting %.0f s", delay)
+                        time.sleep(delay)
+                        continue
+                    raise CrossrefConnectionError(
+                        f"Still rate limited after {self.retries} attempts"
+                    ) from last_exception
                 elif 400 <= response.status_code < 500:
                     # Client error - don't retry
                     raise CrossrefAPIError(
