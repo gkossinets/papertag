@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from papertag.cli import PDFMetadataManager
-from papertag.core import CrossrefMatch
+from papertag.core import CrossrefMatch, PDFMetadata
 
 # Use an absolute path so process_single_pdf's Path(...).resolve() does not
 # depend on the current working directory. Other test modules chdir into a
@@ -22,7 +22,7 @@ def _extracted(**overrides):
     """Build a fake extracted-PDF-metadata object."""
     base = dict(doi=None, title="T", authors="A", year="2020", used_ocr=False)
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return PDFMetadata(**base)
 
 
 def _current_metadata():

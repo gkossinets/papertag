@@ -241,9 +241,12 @@ Exit status:
 
 ## Limitations
 
-- The title and authors are guessed from the order and capitalization of the
-  lines on page 1, which works poorly for some layouts. A DOI printed on the
-  first page gives the most reliable result.
+- The title is the largest text on page 1. When a journal name is set larger
+  than the title (some SAGE and Taylor & Francis layouts), the search uses the
+  journal name and usually finds nothing to accept. Authors are still guessed
+  from the order and capitalization of the lines, which is often wrong; a file
+  named `Author - Year - Title.pdf` supplies a better author. A DOI printed on
+  the first page gives the most reliable result.
 - Without a DOI, batch mode can pick the wrong one of two papers by the same
   authors whose long titles differ in a single word, or one of two records of
   the same work (a preprint and the article).

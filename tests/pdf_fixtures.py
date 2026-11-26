@@ -1,9 +1,13 @@
 """Helpers that build small real PDFs for tests."""
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import pikepdf
+
+# A line is its text (drawn at 12 pt), or (text, size), or (text, size, "rotated")
+# for text turned 90 degrees, like the arXiv identifier in a preprint's margin.
+Line = Union[str, Tuple[str, float], Tuple[str, float, str]]
 
 
 def xmp_packet(description: str) -> str:
@@ -33,7 +37,7 @@ def xmp_packet(description: str) -> str:
 
 def make_text_pdf(
     path: Path,
-    lines: List[str],
+    lines: List[Line],
     docinfo: Optional[Dict[str, str]] = None,
     xmp: Optional[str] = None,
 ) -> Path:
@@ -41,7 +45,9 @@ def make_text_pdf(
 
     Args:
         path: Where to write the PDF.
-        lines: Text lines to draw, top to bottom.
+        lines: Text lines to draw, top to bottom, each a string (12 pt) or a
+            ``(text, size)`` / ``(text, size, "rotated")`` tuple. Lines are
+            spaced 1.2 times their size apart.
         docinfo: Document info entries, keyed with or without the leading
             slash (e.g. ``{"/Title": "..."}``).
         xmp: A raw XMP packet (see ``xmp_packet``) stored as the catalog's
@@ -56,10 +62,18 @@ def make_text_pdf(
         Subtype=pikepdf.Name.Type1,
         BaseFont=pikepdf.Name.Helvetica,
     ))
-    ops = ["BT", "/F1 12 Tf", "72 720 Td", "14 TL"]
+    ops = ["BT"]
+    y = 740.0
     for line in lines:
-        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        ops.append(f"({escaped}) Tj T*")
+        if isinstance(line, str):
+            text, size, style = line, 12.0, ""
+        else:
+            text, size = line[0], line[1]
+            style = line[2] if len(line) > 2 else ""
+        escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        y -= 1.2 * size
+        matrix = f"0 1 -1 0 30 {y:.1f}" if style == "rotated" else f"1 0 0 1 72 {y:.1f}"
+        ops.append(f"/F1 {size} Tf {matrix} Tm ({escaped}) Tj")
     ops.append("ET")
     content = pdf.make_stream("\n".join(ops).encode("latin-1"))
     page = pikepdf.Dictionary(

@@ -35,6 +35,10 @@ from papertag.utils import SessionLogger
 
 log = logging.getLogger(__name__)
 
+# Filename patterns this confident ("Author - Year - Title", "Author (Year) Title")
+# hold a title and author worth more than line-order guesses from the page.
+FILENAME_TRUSTED = 0.85
+
 
 def search_query(
     pdf_metadata: PDFMetadata, filename_hints: FilenameHints
@@ -50,9 +54,19 @@ def search_query(
     Returns:
         ``(title, author, year)``; each None when neither source has it.
     """
-    return (pdf_metadata.title or filename_hints.title,
-            pdf_metadata.authors or filename_hints.author,
-            pdf_metadata.year or filename_hints.year)
+    trusted = filename_hints.confidence >= FILENAME_TRUSTED
+    title = pdf_metadata.title or filename_hints.title
+    # A title guessed from line order is often a running header ("ORIGINAL
+    # ARTICLE"); a title from a well-formed filename ("Author - Year - Title")
+    # is usually right. Embedded and font-size titles are better than either.
+    if pdf_metadata.title_source == "text" and filename_hints.title and trusted:
+        title = filename_hints.title
+    # The page author is always a line-order guess, and on a real library it
+    # held the right name for about one file in six.
+    author = pdf_metadata.authors or filename_hints.author
+    if filename_hints.author and trusted:
+        author = filename_hints.author
+    return (title, author, pdf_metadata.year or filename_hints.year)
 
 
 class PDFMetadataManager:

@@ -6,11 +6,12 @@ Extracts text, metadata, and DOIs from PDF files with OCR fallback for scanned d
 
 import html
 import logging
+import math
 import os
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import pikepdf
 from pypdf import PdfReader
@@ -64,6 +65,37 @@ class PDFMetadata:
     title_source: Optional[str] = None
 
 
+@dataclass
+class TextChunk:
+    """A piece of page-1 text as pypdf draws it.
+
+    Attributes:
+        text: The text, including any whitespace or newline pypdf emitted.
+        size: Rendered font size in points; None for whitespace, whose size
+            pypdf does not report reliably.
+        rotated: True for text not set left to right (e.g. arXiv's margin stamp).
+    """
+    text: str
+    size: Optional[float]
+    rotated: bool = False
+
+
+@dataclass
+class _TextBlock:
+    """Consecutive chunks of one font size: a title, a heading, an author line."""
+    size: float
+    parts: List[str]
+
+    @property
+    def text(self) -> str:
+        joined = "".join(self.parts)
+        # A line ending in a hyphen continues the word on the next line.
+        joined = re.sub(r'-\s*\n\s*', '-', joined)
+        # JSTOR cover pages set "Author(s): ... Source: ..." in the title's type.
+        joined = re.split(r'\s+Author\(s\):', joined)[0]
+        return " ".join(joined.split())
+
+
 class PDFProcessor:
     """Extract text and metadata from PDF files."""
 
@@ -95,7 +127,8 @@ class PDFProcessor:
         r'isbn',
         r'issn',
         r'\d{4} by',
-        r'Elsevier|Springer|Wiley|SAGE|IEEE|Oxford University Press|Cambridge University Press'
+        # Whole words: with IGNORECASE, a bare "SAGE" rejected titles with "usage".
+        r'\b(?:Elsevier|Springer|Wiley|SAGE|IEEE|Oxford University Press|Cambridge University Press)\b'
     ]
 
     # Embedded metadata. Key names come from a survey of ~400 real PDFs
@@ -139,6 +172,17 @@ class PDFProcessor:
     ]
     # Share of an embedded title's words that must appear in the page text.
     TITLE_ON_PAGE_MIN_SHARE = 0.6
+
+    # Title by font size. Sizes within this many points are the same type.
+    FONT_SIZE_TOLERANCE = 0.2
+    # Elsevier sets the journal name ~4% larger than the title; sizes this
+    # close compete on length, and the longer block (the title) wins.
+    FONT_SIZE_NEAR_RATIO = 0.95
+    TITLE_MIN_WORDS = 3          # shorter: a label ("FIELD NOTES"), a drop cap
+    # pypdf reports size 1.0 for some text after a font switch mid-line; no
+    # real text is this small, so such chunks are skipped.
+    MIN_PLAUSIBLE_FONT_SIZE = 2.0
+    TITLE_MAX_CHARS = 300
 
     def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
@@ -185,7 +229,7 @@ class PDFProcessor:
         metadata = PDFMetadata()
 
         # Extract text from PDF
-        text = self._extract_text(pdf_path)
+        text, chunks = self._extract_page(pdf_path)
 
         # If text is insufficient, try OCR
         if len(text.strip()) < 100:
@@ -209,6 +253,12 @@ class PDFProcessor:
 
             log.debug("Extracted title=%r authors=%r journal=%r", title, authors, journal)
 
+        # The largest type on the page is the title far more often than the
+        # line the order-and-capitalization guess picks (often a header).
+        font_title = self._title_from_font_size(chunks)
+        if font_title:
+            metadata.title, metadata.title_source = font_title, "font size"
+
         text_doi = self._extract_doi(text)
         if text_doi:
             metadata.doi, metadata.doi_source = text_doi, "text"
@@ -219,7 +269,9 @@ class PDFProcessor:
         if embedded_doi:
             metadata.doi, metadata.doi_source = embedded_doi
         if embedded_title:
-            metadata.title, metadata.title_source = embedded_title
+            # Some publishers embed the title cut at the colon; the page has it all.
+            if not (font_title and self._extends(font_title, embedded_title[0])):
+                metadata.title, metadata.title_source = embedded_title
 
         log.debug("DOI=%r (from %s), title=%r (from %s)", metadata.doi, metadata.doi_source,
                   metadata.title, metadata.title_source)
@@ -286,6 +338,13 @@ class PDFProcessor:
 
         return (candidates_doi[0] if candidates_doi else None,
                 candidates_title[0] if candidates_title else None)
+
+    @staticmethod
+    def _extends(longer: str, shorter: str) -> bool:
+        """True if `longer` has more words than `shorter` and starts with all of them."""
+        long_words = re.findall(r'\w+', longer.casefold())
+        short_words = re.findall(r'\w+', shorter.casefold())
+        return len(long_words) > len(short_words) and long_words[:len(short_words)] == short_words
 
     @staticmethod
     def _written_by_papertag(docinfo: dict) -> bool:
@@ -400,8 +459,12 @@ class PDFProcessor:
         return title
 
     def _extract_text(self, pdf_path: str) -> str:
+        """Extract the text layer of the first page (see ``_extract_page``)."""
+        return self._extract_page(pdf_path)[0]
+
+    def _extract_page(self, pdf_path: str) -> Tuple[str, List[TextChunk]]:
         """
-        Extract the text layer of the first page.
+        Extract the text layer of the first page, with the size of each piece.
 
         Only page 1 is read: it carries the title, authors, and usually the
         DOI, and reading further slows down large PDFs for no gain.
@@ -410,20 +473,115 @@ class PDFProcessor:
             pdf_path: Path to PDF file
 
         Returns:
-            Extracted text (empty if the page has no text layer)
+            ``(text, chunks)``: the page text (empty if the page has no text
+            layer) and the pieces it was drawn in, in content-stream order.
 
         Raises:
             PDFReadError: If the PDF cannot be parsed
         """
+        chunks: List[TextChunk] = []
+
+        def visit(text: str, cm: list, tm: list, font: object, font_size: float) -> None:
+            chunks.append(self._text_chunk(text, cm, tm, font_size))
+
         try:
             reader = PdfReader(pdf_path)
             if len(reader.pages) == 0:
                 raise PDFReadError("PDF has no pages")
-            return reader.pages[0].extract_text() or ""
+            text = reader.pages[0].extract_text(visitor_text=visit) or ""
+            return text, chunks
         except PDFReadError:
             raise
         except Exception as e:
             raise PDFReadError(f"Failed to read PDF: {e}") from e
+
+    @staticmethod
+    def _text_chunk(text: str, cm: list, tm: list, font_size: float) -> TextChunk:
+        """Build a TextChunk from what pypdf passes its text visitor.
+
+        The rendered size is the Tf size scaled by the text and current
+        transformation matrices; publishers often set Tf to 1 and scale.
+        """
+        # m = tm x cm, keeping the parts that tell size and rotation.
+        m1 = tm[0] * cm[1] + tm[1] * cm[3]
+        m2 = tm[2] * cm[0] + tm[3] * cm[2]
+        m3 = tm[2] * cm[1] + tm[3] * cm[3]
+        if not text.strip():
+            return TextChunk(text, None)
+        rotated = abs(m1) > 1e-3 or abs(m2) > 1e-3 or m3 <= 0
+        return TextChunk(text, font_size * math.hypot(m2, m3), rotated)
+
+    def _title_from_font_size(self, chunks: List[TextChunk]) -> Optional[str]:
+        """Return the text set in the largest type on the page, if it looks like a title.
+
+        Candidates are blocks of one size larger than the body text, with at
+        least three words. Among the largest (and those within 5% of it) the
+        longest wins: it is the title, not a journal name or a label.
+
+        Args:
+            chunks: Page-1 text pieces from ``_extract_page``.
+
+        Returns:
+            The title, or None when no block qualifies (e.g. a page set in
+            one size, or a scan without a text layer).
+        """
+        blocks = self._text_blocks(chunks)
+        letters_by_size: Dict[float, int] = {}
+        for block in blocks:
+            letters = sum(c.isalpha() for c in block.text)
+            size = round(block.size, 1)
+            letters_by_size[size] = letters_by_size.get(size, 0) + letters
+        if not letters_by_size:
+            return None
+        body_size = max(letters_by_size, key=letters_by_size.get)
+
+        candidates = [b for b in blocks
+                      if b.size > body_size + self.FONT_SIZE_TOLERANCE
+                      and self._looks_like_title(b.text)]
+        if not candidates:
+            return None
+        largest = max(b.size for b in candidates)
+        near = [b for b in candidates if b.size >= largest * self.FONT_SIZE_NEAR_RATIO]
+        best = max(near, key=lambda b: sum(c.isalpha() for c in b.text))
+        return best.text
+
+    def _text_blocks(self, chunks: List[TextChunk]) -> List[_TextBlock]:
+        """Group chunks into runs of one font size, in drawing order.
+
+        Position is not used: pypdf reports a wrong height for lines after a
+        line break in some publishers' PDFs. Different text drawn in between
+        (a cover page's small print) is what separates two blocks.
+        """
+        blocks: List[_TextBlock] = []
+        current: Optional[_TextBlock] = None
+        for chunk in chunks:
+            if chunk.rotated:
+                continue
+            if chunk.size is None:  # whitespace: belongs to the block it is in
+                if current:
+                    current.parts.append(chunk.text)
+                continue
+            if chunk.size < self.MIN_PLAUSIBLE_FONT_SIZE:
+                continue
+            if current is not None and abs(chunk.size - current.size) <= self.FONT_SIZE_TOLERANCE:
+                current.parts.append(chunk.text)
+                continue
+            # A footnote marker (*, 1, a dagger) set in smaller type inside a
+            # title must not split it.
+            if current is not None and not any(c.isalpha() for c in chunk.text) \
+                    and len(chunk.text.strip()) <= 3:
+                continue
+            current = _TextBlock(chunk.size, [chunk.text])
+            blocks.append(current)
+        return blocks
+
+    def _looks_like_title(self, text: str) -> bool:
+        """True if a block of large text could be a title."""
+        words = [w for w in text.split() if any(c.isalpha() for c in w)]
+        if len(words) < self.TITLE_MIN_WORDS or len(text) > self.TITLE_MAX_CHARS:
+            return False
+        return not any(re.search(pattern, text, re.IGNORECASE)
+                       for pattern in self.TITLE_BLACKLIST_PATTERNS)
 
     def _extract_text_with_ocr(self, pdf_path: str, pages: Optional[int] = None) -> str:
         """
