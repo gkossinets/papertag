@@ -107,7 +107,8 @@ once, even if it matches more than one argument.
 | Option | Description |
 |--------|-------------|
 | `-e`, `--email EMAIL` | Email for Crossref (default: `$CROSSREF_EMAIL`) |
-| `-b`, `--batch` | Apply matches scoring 0.80 or more without asking; skip the rest |
+| `-b`, `--batch` | Apply the best match without asking if it scores at least the threshold and clearly beats the runner-up; skip the file otherwise |
+| `-t`, `--threshold SCORE` | Minimum score for `--batch` to apply a search result (default: 0.80) |
 | `-r`, `--recursive` | Include PDFs in subdirectories |
 | `--no-rename` | Update metadata but keep the current filename |
 | `--from-filename` | Take metadata from an `Author - Year - Title.pdf` name; skip Crossref |
@@ -161,8 +162,12 @@ Crossref finds nothing, you can still enter a DOI or use the filename.
 
 - If a DOI is found in the PDF's metadata or on the first page, its Crossref
   record is applied (score 1.00).
-- Otherwise the best search result is applied only if it scores at least 0.80,
-  and the file is skipped if not.
+- Otherwise the best search result is applied only if it scores at least the
+  threshold (0.80, or `--threshold`) and leads the next candidate by at least
+  0.05. Two near-equal candidates mean papertag can't tell which paper the file
+  is, so it skips. A preprint is not counted as a rival of the article, or the
+  other way round: they are usually the same work, and papertag has already
+  picked the one that fits the PDF (see Limitations).
 - Files that cannot be read or written are reported as failed, and processing
   continues.
 
@@ -247,11 +252,16 @@ Exit status:
   from the order and capitalization of the lines, which is often wrong; a file
   named `Author - Year - Title.pdf` supplies a better author. A DOI printed on
   the first page gives the most reliable result.
-- Without a DOI, batch mode can pick the wrong one of two papers by the same
-  authors whose long titles differ in a single word, or one of two records of
-  the same work (an abstract and the paper). Between a preprint and the
-  article that score the same, it picks the preprint if page 1 carries a
-  preprint server's stamp (arXiv, bioRxiv, SSRN, ...), otherwise the article.
+- Without a DOI, batch mode can still rename a file wrongly. The lead it
+  requires over the runner-up only helps when two candidates score close
+  together. When the paper itself isn't in Crossref, a duplicate record of
+  the same work (an abstract, a reprint, a dissertation) often tops the list
+  alone and is accepted. In replays of recorded searches with the right
+  record removed, that happened about 1 time in 25. Between a preprint and
+  the article, it picks the preprint if page 1 carries a preprint server's
+  stamp (arXiv, bioRxiv, SSRN, ...), otherwise the article. It does not check
+  that the two really are the same paper. Run batches with `--log` and look
+  over the renames.
 - Only Crossref is searched. Papers with no Crossref record (most arXiv-only
   preprints, many books, theses) need `--from-filename` or a manual DOI.
 

@@ -36,11 +36,11 @@ sys.path.insert(0, str(REPO))
 from papertag import __version__  # noqa: E402
 from papertag.cli import SearchQuery, collect_pdf_files, search_query  # noqa: E402
 from papertag.core import FilenameHints, PDFMetadata, PDFProcessor, parse_filename  # noqa: E402
-from papertag.core.crossref_client import CrossrefClient  # noqa: E402
+from papertag.core.crossref_client import (BATCH_THRESHOLD, CrossrefClient,  # noqa: E402
+                                           batch_choice)
 
 DEFAULT_CACHE = Path.home() / ".cache" / "papertag" / "eval-crossref"
 USER_AGENT = f"papertag-eval/{__version__}"
-BATCH_THRESHOLD = 0.80
 MODES = ("papertag", "page", "filename")
 
 
@@ -89,8 +89,9 @@ def judge(client: CachingClient, query: SearchQuery, truth: str,
                             prefer_preprint=query.preprint)
     found = any(i.get("DOI", "").lower() == truth for i in client.last_items)
     top = matches[0] if matches else None
-    if top and top.score >= threshold:
-        outcome = "right" if top.doi.lower() == truth else "wrong"
+    accepted = batch_choice(matches, threshold=threshold).match
+    if accepted:
+        outcome = "right" if accepted.doi.lower() == truth else "wrong"
     else:
         outcome = "skip"
     return {"outcome": outcome, "found": found, "query": query,
@@ -140,7 +141,8 @@ def summarize(records: List[Dict[str, Any]], excluded: int, failed: int) -> str:
         lines.append(f"{mode:<10} {c['right']:>6} {c['wrong']:>6} {c['skip']:>6} "
                      f"{c['no_query']:>9} {found:>11}")
     lines.append("")
-    lines.append("right/wrong: batch mode would accept the top match (score >= threshold).")
+    lines.append("right/wrong: batch mode would accept the top match (score >= threshold, "
+                 "clear lead over the runner-up).")
     lines.append("in results: the right paper was among Crossref's candidates at all.")
     return "\n".join(lines)
 

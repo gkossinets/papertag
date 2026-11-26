@@ -30,6 +30,7 @@ from papertag.core import (
     parse_filename,
     FilenameHints
 )
+from papertag.core.crossref_client import BATCH_THRESHOLD, batch_choice
 from papertag.ui import InteractiveUI, UserQuitError
 from papertag.utils import SessionLogger
 
@@ -99,7 +100,8 @@ class PDFMetadataManager:
         batch_mode: bool = False,
         rename: bool = True,
         log_path: Optional[str] = None,
-        from_filename: bool = False
+        from_filename: bool = False,
+        threshold: float = BATCH_THRESHOLD,
     ):
         """
         Initialize the orchestrator.
@@ -116,8 +118,10 @@ class PDFMetadataManager:
             rename: Rename files to Zotero format
             log_path: Path to write a JSON session log to (default: no log file)
             from_filename: Extract metadata from Zotero-style filename (skip Crossref)
+            threshold: Minimum score for batch mode to apply a search result
         """
         self.batch_mode = batch_mode
+        self.threshold = threshold
         self.rename = rename
         self.from_filename = from_filename
 
@@ -143,6 +147,7 @@ class PDFMetadataManager:
             'ocr_pages': ocr_pages,
             'keep_backup': keep_backup,
             'batch_mode': batch_mode,
+            'threshold': threshold,
             'rename': rename,
             'retries': retries
         }
@@ -240,19 +245,15 @@ class PDFMetadataManager:
             selected_directly = False
 
             if self.batch_mode:
-                # Auto-accept if high confidence
-                if matches[0].score >= 0.80:
-                    selected_match = matches[0]
+                decision = batch_choice(matches, threshold=self.threshold)
+                if decision.match is None:
                     if not self.ui.quiet:
-                        print(f"Auto-selected (score: {matches[0].score:.2f})")
-                else:
-                    if not self.ui.quiet:
-                        print(f"Skipped: confidence too low ({matches[0].score:.2f} < 0.80)")
-                    self.logger.log_skip(
-                        pdf_path,
-                        f"Confidence below threshold: {matches[0].score:.2f}"
-                    )
+                        print(f"Skipped: {decision.reason}")
+                    self.logger.log_skip(pdf_path, decision.reason)
                     return 'skipped'
+                selected_match = decision.match
+                if not self.ui.quiet:
+                    print(f"Auto-selected (score: {selected_match.score:.2f})")
             else:
                 # Interactive mode
                 selected_match = self.ui.display_matches(
@@ -659,7 +660,16 @@ Environment Variables:
     parser.add_argument(
         '--batch', '-b',
         action='store_true',
-        help='Batch mode: auto-accept matches with confidence >= 0.80'
+        help=('Batch mode: apply the best match if it scores >= the threshold '
+              'and clearly beats the runner-up; skip the file otherwise')
+    )
+
+    parser.add_argument(
+        '--threshold', '-t',
+        type=float,
+        default=BATCH_THRESHOLD,
+        metavar='SCORE',
+        help=f'Minimum score for --batch to apply a search result (default: {BATCH_THRESHOLD:.2f})'
     )
 
     parser.add_argument(
@@ -760,6 +770,9 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
     if args.retries < 1:
         return False, "Error: --retries must be >= 1"
 
+    if not 0 < args.threshold <= 1:
+        return False, "Error: --threshold must be greater than 0 and at most 1"
+
     return True, None
 
 
@@ -834,7 +847,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         batch_mode=args.batch,
         rename=not args.no_rename,
         log_path=args.log,
-        from_filename=args.from_filename
+        from_filename=args.from_filename,
+        threshold=args.threshold,
     )
 
     interrupted = manager.process_files(files)

@@ -12,6 +12,10 @@ abstract, reprint). The old scoring: 222 right, 0 wrong, 13 of 485.
 At step 3.4 the same queries were re-issued in the fielded form
 (query.bibliographic + query.author): the right work is among the candidates
 for 502 (was 485); 393 right accepts, the same 2 wrong, 22 of 497 absent.
+
+At step 3.5 batch mode also requires a 0.05 lead over the runner-up (a
+preprint of the pick doesn't count as one): 391 right, 0 wrong, 20 of 497.
+The two lost right accepts led a same-titled dissertation record by 0.01.
 """
 
 import pytest
@@ -37,7 +41,7 @@ def test_each_realistic_query_shape_is_accepted(stats, variant):
 
 
 def test_batch_rarely_accepts_a_wrong_work(stats):
-    assert stats["all"].accept_wrong <= 3, report(stats)
+    assert stats["all"].accept_wrong <= 1, report(stats)
 
 
 def test_batch_rarely_accepts_when_the_work_is_absent(stats):

@@ -102,6 +102,14 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   "preprint ... not peer reviewed", the SSRN footer, PsyArXiv/OSF and Research Square DOIs. Not
   "arXiv preprint arXiv:..." (a citation) or osf.io (data links). Flags 6 of the 400 sampled PDFs.
 
+- 2026-11-26: Batch accepts (step 3.5) go through `crossref_client.batch_choice`: top score
+  >= threshold (`--threshold`/`-t`, default `BATCH_THRESHOLD` 0.80, range (0, 1]) and a lead of
+  >= `BATCH_MARGIN` 0.05 over the best rival, even a rival below the threshold. A rival is any other
+  candidate except an article/preprint counterpart of the pick (`CrossrefMatch.work_type`;
+  rank_key already chose between them). That exclusion does not check they're the same work. The
+  benchmark replay and `tools/eval_library.py` call the same function. Margin is a constant, not
+  a flag: 0.02-0.05 give the same benchmark result, 0.10 costs 7 more right accepts.
+
 ## Roadmap
 
 1. ~~Foundation: rename, pyproject, green tests, remove dead code.~~ (done 2026-11-26)
@@ -144,7 +152,13 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       better than the plain query; the full author line in `query.author` did slightly better
       on the benchmark's clean author lines but was not adopted, since real page author lines
       are mostly not names.
-   5. Batch: require margin over runner-up; `--threshold`
+   5. ~~Batch: require margin over runner-up; `--threshold`.~~ (done 2026-11-26) Benchmark: right
+      accepts 393 -> 391, wrong 2 -> 0, accepts with the right work absent 22 -> 20 of 497.
+      The lost right accepts led a same-titled dissertation record by 0.01. The margin can't help
+      the remaining 20 absent accepts: they're a lone duplicate record of the work (abstract,
+      reprint), well ahead of everything else. Catching those needs a different signal (record
+      type, page count, a DOI on the page). Real-PDF eval (`tools/eval_library.py`) not re-run
+      this session; it shares `batch_choice`, so re-run it on the same 37 files to compare.
    6. Verify a DOI found in page text against the page's title (reference lists contain
       other papers' DOIs)
    7. arXiv IDs, ISBNs

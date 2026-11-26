@@ -3,8 +3,8 @@
 tests/data/crossref_benchmark.json.gz holds real Crossref search results for
 queries whose right answer is known (see tools/record_crossref_benchmark.py).
 Replaying it offline measures what batch mode would do, which is what matters:
-it writes metadata and renames the file whenever the top match scores at least
-the threshold.
+it writes metadata and renames the file whenever batch_choice accepts the top
+match (score at least the threshold, and a margin over the runner-up).
 
 Run ``python -m tests.scoring_benchmark`` for a report.
 """
@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-from papertag.core.crossref_client import CrossrefClient
+from papertag.core.crossref_client import (BATCH_MARGIN, BATCH_THRESHOLD, CrossrefClient,
+                                           CrossrefMatch, batch_choice)
 
 BENCHMARK = Path(__file__).parent / "data" / "crossref_benchmark.json.gz"
-BATCH_THRESHOLD = 0.80
 
 ScoreFn = Callable[[Dict[str, Any], Dict[str, Any]], float]
 
@@ -71,8 +71,23 @@ def with_derived_variants(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return cases + derived
 
 
+def _ranked(items: List[Dict[str, Any]], query: Dict[str, Any],
+            score: ScoreFn) -> List[CrossrefMatch]:
+    """Score and rank items as CrossrefClient.search does, tie-break included."""
+    scored = []
+    for item in items:
+        s = score(item, query)
+        match = CrossrefMatch(doi=item["DOI"].lower(), title=(item.get("title") or [""])[0],
+                              authors=[], year=None, journal=None, score=s,
+                              work_type=item.get("type"))
+        scored.append((CrossrefClient.rank_key(s, item), match))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [match for _, match in scored]
+
+
 def evaluate(cases: List[Dict[str, Any]], score: ScoreFn,
-             threshold: float = BATCH_THRESHOLD) -> Dict[str, VariantStats]:
+             threshold: float = BATCH_THRESHOLD,
+             margin: float = BATCH_MARGIN) -> Dict[str, VariantStats]:
     """Score every case and tally batch-mode outcomes by query variant.
 
     Args:
@@ -80,6 +95,7 @@ def evaluate(cases: List[Dict[str, Any]], score: ScoreFn,
         score: ``score(item, query)`` for one Crossref item and a query dict
             with title/author/year.
         threshold: Batch auto-accept threshold.
+        margin: Batch lead required over the runner-up.
 
     Returns:
         Stats keyed by variant name, plus "all".
@@ -89,30 +105,31 @@ def evaluate(cases: List[Dict[str, Any]], score: ScoreFn,
         items = case["items"]
         if not items:
             continue
-        # Rank as CrossrefClient.search does, tie-break included.
-        ranked = sorted(((CrossrefClient.rank_key(score(i, case["query"]), i), i["DOI"].lower())
-                         for i in items), key=lambda pair: pair[0], reverse=True)
-        scored = [(key[0], doi) for key, doi in ranked]
+        ranked = _ranked(items, case["query"], score)
         truth = case["true_doi"]
+        present = any(m.doi == truth for m in ranked)
+        accepted = batch_choice(ranked, threshold, margin).match
+        # The same candidates without the right work: stands in for a paper
+        # Crossref doesn't have.
+        absent = [m for m in ranked if m.doi != truth]
+        absent_accepted = batch_choice(absent, threshold, margin).match
         for key in (case["variant"], "all"):
             s = stats[key]
             s.cases += 1
-            present = any(doi == truth for _, doi in scored)
             s.found += present
-            top_score, top_doi = scored[0]
-            if top_doi == truth:
+            if ranked[0].doi == truth:
                 s.top1 += 1
-            if top_score >= threshold:
-                if top_doi == truth:
+            if accepted:
+                if accepted.doi == truth:
                     s.accept_right += 1
                 else:
                     s.accept_wrong += 1
                     if key != "all":
-                        s.wrong_examples.append(f"{case['id']} -> {top_doi} ({top_score:.2f})")
-            absent = [pair for pair in scored if pair[1] != truth]
+                        s.wrong_examples.append(
+                            f"{case['id']} -> {accepted.doi} ({accepted.score:.2f})")
             if present and absent:
                 s.absent_cases += 1
-                s.absent_accept += absent[0][0] >= threshold
+                s.absent_accept += absent_accepted is not None
     return dict(stats)
 
 

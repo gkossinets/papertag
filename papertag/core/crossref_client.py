@@ -43,16 +43,68 @@ class CrossrefMatch:
     journal: Optional[str]
     score: float  # 0.0 to 1.0
     isbn: Optional[str] = None
+    work_type: Optional[str] = None  # Crossref `type`, e.g. journal-article, posted-content
+
+    @property
+    def is_preprint(self) -> bool:
+        """Whether Crossref files this record as a preprint (posted-content)."""
+        return self.work_type == 'posted-content'
 
     @property
     def confidence_level(self) -> str:
         """Return HIGH/MEDIUM/LOW based on score."""
-        if self.score >= 0.80:
+        if self.score >= BATCH_THRESHOLD:
             return "HIGH"
         elif self.score >= 0.65:
             return "MEDIUM"
         else:
             return "LOW"
+
+
+# Batch mode accepts the top match only at this score, and only if it leads
+# the next rival by the margin. On the recorded benchmark the margin removed
+# both wrong accepts (two records of one study, scored equal) at a cost of two
+# right ones; 0.10 would cost seven more.
+BATCH_THRESHOLD = 0.80
+BATCH_MARGIN = 0.05
+
+
+@dataclass
+class BatchDecision:
+    """Batch mode's verdict on a ranked candidate list."""
+    match: Optional[CrossrefMatch]  # None: skip the file
+    reason: str = ''                # why it was skipped
+
+
+def batch_choice(matches: List[CrossrefMatch], threshold: float = BATCH_THRESHOLD,
+                 margin: float = BATCH_MARGIN) -> BatchDecision:
+    """Decide whether batch mode may apply the top match without asking.
+
+    The top match must score at least `threshold` and lead the best rival by
+    at least `margin`. A rival is any other candidate except the article (or
+    preprint) counterpart of a preprint (or article) pick: those are usually
+    the same work, and rank_key has already chosen the form the PDF is.
+
+    Args:
+        matches: Candidates, best first (as CrossrefClient.search returns them).
+        threshold: Minimum score to accept.
+        margin: Minimum lead over the best rival.
+
+    Returns:
+        The match to apply, or None with the reason for skipping.
+    """
+    if not matches:
+        return BatchDecision(None, 'No Crossref matches found')
+    top = matches[0]
+    if top.score < threshold:
+        return BatchDecision(
+            None, f'Confidence below threshold: {top.score:.2f} < {threshold:.2f}')
+    rival = next((m for m in matches[1:] if m.is_preprint == top.is_preprint), None)
+    # Round so that a lead of exactly the margin isn't lost to float error.
+    if rival and round(top.score - rival.score, 6) < margin:
+        return BatchDecision(
+            None, f'Ambiguous: {top.doi} ({top.score:.2f}) vs {rival.doi} ({rival.score:.2f})')
+    return BatchDecision(top)
 
 
 class CrossrefClient:
@@ -578,7 +630,8 @@ class CrossrefClient:
                     authors=self._extract_authors(item),
                     year=self._extract_year(item),
                     journal=(item.get('container-title') or [None])[0],
-                    score=score
+                    score=score,
+                    work_type=item.get('type'),
                 )
 
                 ranked.append((self.rank_key(score, item, prefer_preprint), match))
@@ -626,4 +679,5 @@ class CrossrefClient:
             journal=(item.get('container-title') or [None])[0],
             score=1.0,
             isbn=isbn,
+            work_type=item.get('type'),
         )
