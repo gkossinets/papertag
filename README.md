@@ -4,7 +4,7 @@ papertag is a command-line tool that updates the metadata of academic PDFs and
 gives them Zotero-style filenames.
 
 PDFs downloaded from journals, preprint servers and colleagues often carry
-missing or wrong metadata (a title like `Microsoft Word - draft3.docx`, no
+missing or wrong metadata (a title like `manuscript_final_v2.pdf`, no
 authors) and meaningless names like `393440a0.pdf`. papertag reads the first
 page, identifies the paper through [Crossref](https://www.crossref.org/),
 writes the correct title, authors, year, journal and DOI into the file, and
