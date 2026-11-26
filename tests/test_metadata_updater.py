@@ -342,3 +342,27 @@ class TestPDFMetadataUpdate(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --- Failure handling -------------------------------------------------------
+
+from unittest.mock import patch
+
+import pytest
+
+from tests.pdf_fixtures import make_text_pdf
+
+
+def test_failed_write_raises_and_leaves_file_untouched(tmp_path):
+    """A failed pikepdf write must not fall back to a lossy rewrite
+    (the old PyPDF2 path dropped bookmarks and XMP)."""
+    path = make_text_pdf(tmp_path / "paper.pdf", ["Some Title"])
+    original = path.read_bytes()
+    updater = MetadataUpdater()
+
+    with patch.object(MetadataUpdater, "_update_with_pikepdf",
+                      side_effect=RuntimeError("boom")):
+        with pytest.raises(PDFUpdateError, match="boom"):
+            updater.update_metadata(str(path), MetadataUpdate(title="T", authors="A"))
+
+    assert path.read_bytes() == original

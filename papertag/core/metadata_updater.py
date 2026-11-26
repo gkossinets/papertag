@@ -14,13 +14,6 @@ from typing import Optional
 import pikepdf
 
 try:
-    from PyPDF2 import PdfReader, PdfWriter
-    PYPDF2_AVAILABLE = True
-except ImportError:
-    PYPDF2_AVAILABLE = False
-    print("Warning: PyPDF2 not available. Only pikepdf will be used for PDF operations.")
-
-try:
     from pathvalidate import sanitize_filename as pathvalidate_sanitize
     PATHVALIDATE_AVAILABLE = True
 except ImportError:
@@ -141,8 +134,10 @@ class MetadataUpdater:
         """
         Update PDF metadata.
 
-        Updates both docinfo and XMP metadata in the PDF file. Uses pikepdf
-        as the primary library with PyPDF2 as a fallback if available.
+        Updates both docinfo and XMP metadata in the PDF file with pikepdf.
+        There is deliberately no fallback writer: the alternatives rebuild
+        the file and drop bookmarks, XMP, and other structure, so a failure
+        is reported instead.
 
         Args:
             pdf_path: Path to PDF file
@@ -172,22 +167,10 @@ class MetadataUpdater:
             shutil.copy2(pdf_path, backup_path)
             print(f"  Created backup: {backup_path}")
 
-        # Try to update with pikepdf first
         try:
             return self._update_with_pikepdf(pdf_path, metadata, output_path, original_timestamps)
         except Exception as e:
-            print(f"  pikepdf update failed: {e}")
-
-            # Try PyPDF2 fallback if available
-            if PYPDF2_AVAILABLE:
-                print("  Trying PyPDF2 fallback...")
-                try:
-                    return self._update_with_pypdf2(pdf_path, metadata, output_path, original_timestamps)
-                except Exception as e2:
-                    print(f"  PyPDF2 fallback also failed: {e2}")
-                    raise PDFUpdateError(f"All metadata update methods failed. Last error: {e2}")
-            else:
-                raise PDFUpdateError(f"Metadata update failed: {e}")
+            raise PDFUpdateError(f"Metadata update failed: {e}") from e
 
     def _update_with_pikepdf(
         self,
@@ -334,67 +317,6 @@ class MetadataUpdater:
                 except:
                     pass
             raise
-
-    def _update_with_pypdf2(
-        self,
-        pdf_path: str,
-        metadata: MetadataUpdate,
-        output_path: str,
-        original_timestamps: dict
-    ) -> bool:
-        """Update PDF metadata using PyPDF2 as fallback."""
-        reader = PdfReader(pdf_path)
-        writer = PdfWriter()
-
-        # Add all pages from the original PDF
-        for page in reader.pages:
-            writer.add_page(page)
-
-        # Create metadata dictionary
-        metadata_dict = {}
-
-        if metadata.title:
-            metadata_dict["/Title"] = metadata.title
-
-        if metadata.authors:
-            metadata_dict["/Author"] = metadata.authors
-
-        # Handle journal and DOI in Subject field
-        subject_parts = []
-        if metadata.journal:
-            subject_parts.append(metadata.journal)
-
-        if metadata.doi:
-            subject_parts.append(f"DOI: {metadata.doi}")
-        elif metadata.isbn:
-            subject_parts.append(f"ISBN: {metadata.isbn}")
-
-        if subject_parts:
-            metadata_dict["/Subject"] = " | ".join(subject_parts)
-
-        # Add Keywords field
-        if metadata.doi:
-            metadata_dict["/Keywords"] = f"DOI: {metadata.doi}"
-        elif metadata.isbn:
-            metadata_dict["/Keywords"] = f"ISBN: {metadata.isbn}"
-
-        # Try to add metadata (PyPDF2 version compatibility)
-        try:
-            writer.add_metadata(metadata_dict)
-        except AttributeError:
-            try:
-                writer.addMetadata(metadata_dict)
-            except:
-                print("  Warning: Could not add metadata with PyPDF2")
-
-        # Save the PDF
-        with open(output_path, "wb") as output_file:
-            writer.write(output_file)
-
-        # Preserve timestamps
-        set_timestamps(output_path, original_timestamps)
-
-        return True
 
     def generate_zotero_filename(
         self,
