@@ -43,16 +43,21 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
 2. ~~Correctness: multiple input paths, exit codes, `--version`, pypdf extraction, no lossy
    write fallback, `fetch_metadata` -> `CrossrefMatch` (+ ISBN), logging to stderr, no emoji.~~
    (done 2026-11-26)
-3. Algorithm
-   - read DOI/title already embedded in the PDF (XMP `prism:doi`, `pdfx:doi`, `crossmark:DOI`,
-     `dc:identifier`, docinfo `/Title`) before text heuristics
-   - title = largest font on page 1 (pypdf visitor or pdfminer.six)
-   - scoring: max is 0.9 today (journal weight unused) and 0.7 without an author ->
-     normalize by available evidence; token-based title similarity; whole-word author match
-   - Crossref `query.bibliographic` / `query.author`, `select=`
-   - batch: require margin over runner-up; `--threshold`
-   - verify a DOI found in page text against the page's title
-   - arXiv IDs, ISBNs
+3. Algorithm. Work in this order (agreed 2026-11-26); each item is testable offline with
+   `tests/pdf_fixtures.py`. Run one session per step.
+   1. Read DOI/title already embedded in the PDF (XMP `prism:doi`, `pdfx:doi`, `crossmark:DOI`,
+      `dc:identifier`, docinfo `/Title`) before text heuristics. Biggest gain for least work:
+      many publisher PDFs carry their DOI, which turns a fuzzy search into an exact lookup.
+   2. Scoring: max is 0.9 today (journal weight unused) and 0.7 without an author ->
+      normalize by available evidence; token-based title similarity; whole-word author match
+      ("Li" must not match "Lipton"). This is what makes batch mode useful without a DOI.
+   3. Title = largest font on page 1 (pypdf visitor or pdfminer.six). Fixes most wrong searches,
+      which today come from guessing the title by line order and capitalization.
+   4. Crossref `query.bibliographic` / `query.author`, `select=`
+   5. Batch: require margin over runner-up; `--threshold`
+   6. Verify a DOI found in page text against the page's title (reference lists contain
+      other papers' DOIs)
+   7. arXiv IDs, ISBNs
 4. UX
    - `--dry-run`; skip already-processed files (`--force` to override)
    - side-by-side current vs new metadata; `--undo LOG`
