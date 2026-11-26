@@ -36,6 +36,22 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   `pypdf` at ERROR unless -v. UI prompts/progress stay on stdout. No emoji; the confidence stars
   and box-drawing borders stay.
 - 2026-11-26: `CrossrefClient.fetch_metadata` returns `CrossrefMatch` (score 1.0, optional `isbn`).
+- 2026-11-26: Embedded DOI/title (step 3.1) override page-text heuristics. DOI keys are an
+  allowlist, best first: `prism:doi` (any PRISM version), `pdfx:doi`, `crossmark:DOI`,
+  `dc:identifier`, docinfo `/DOI`, then a `doi:`-labeled DOI in `/Subject` or `/Keywords`. Never scan
+  all fields: Wiley's `pdfx:WPS-JOURNALDOI` is the journal's DOI (`10.1111/(ISSN)...`), so it's rejected.
+  `PDFMetadata.doi_source` / `title_source` record where each value came from.
+- 2026-11-26: Re-runs ignore papertag's own earlier output, so a wrong batch pick gets fixed, not
+  confirmed. Signature: `/Keywords` is exactly `DOI: x`/`ISBN: x`, or `/Subject` ends in
+  `DOI: x`/`ISBN: x` (alone or after ` | `). In such files only publisher keys
+  (prism/pdfx/crossmark/`/DOI`) count, and the title comes from page text. Reuse this check for the
+  step-4 "skip already-processed files" item.
+- 2026-11-26: An embedded title must pass a junk filter (authoring-tool and template titles) and,
+  when page 1 has >= 100 chars of text, have >= 60% of its words (3+ letters) on the page. On a
+  ~400-PDF sample, 77 of 84 clean titles in untouched files passed; the rejects were mostly not papers.
+- 2026-11-26: The `pikepdf` logger is treated like `pypdf`: ERROR unless -v (it logs a traceback when
+  recovering from malformed XMP).
+- Test fixtures use invented, neutral examples, never titles/DOIs from a real library.
 
 ## Roadmap
 
@@ -45,9 +61,10 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
    (done 2026-11-26)
 3. Algorithm. Work in this order (agreed 2026-11-26); each item is testable offline with
    `tests/pdf_fixtures.py`. Run one session per step.
-   1. Read DOI/title already embedded in the PDF (XMP `prism:doi`, `pdfx:doi`, `crossmark:DOI`,
-      `dc:identifier`, docinfo `/Title`) before text heuristics. Biggest gain for least work:
-      many publisher PDFs carry their DOI, which turns a fuzzy search into an exact lookup.
+   1. ~~Read DOI/title already embedded in the PDF before text heuristics.~~ (done 2026-11-26)
+      Known gaps, judged rare: `dc:title` rdf:Alt returns the first language, not `x-default`;
+      raw UTF-8 docinfo `/Title` without BOM decodes as mojibake; a bare journal name as title
+      passes the filter; a labeled SICI DOI in `/Subject` is cut at `<`.
    2. Scoring: max is 0.9 today (journal weight unused) and 0.7 without an author ->
       normalize by available evidence; token-based title similarity; whole-word author match
       ("Li" must not match "Lipton"). This is what makes batch mode useful without a DOI.

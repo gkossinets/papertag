@@ -113,3 +113,18 @@ def test_pypdf_parser_chatter_hidden_unless_verbose(tmp_path, capsys):
     with pytest.raises(Exception):
         PDFProcessor(use_ocr=False)._extract_text(str(broken))
     assert "invalid pdf header" in capsys.readouterr().err
+
+
+def test_malformed_xmp_is_quiet_unless_verbose(tmp_path, capsys):
+    """pikepdf recovers from a bad XMP packet but logs a traceback; that is
+    noise for the user, like pypdf's parser warnings."""
+    path = make_text_pdf(tmp_path / "bad-xmp.pdf", ["Some text on the page"] * 10,
+                         xmp='<x:xmpmeta xmlns:x="adobe:ns:meta/"><foo/></x:xmpmeta>')
+
+    configure_logging(verbose=False, quiet=False)
+    PDFProcessor(use_ocr=False).extract_metadata(str(path))
+    assert "XMP" not in capsys.readouterr().err
+
+    configure_logging(verbose=True, quiet=False)
+    PDFProcessor(use_ocr=False).extract_metadata(str(path))
+    assert "XMP" in capsys.readouterr().err

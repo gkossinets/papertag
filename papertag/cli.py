@@ -743,10 +743,13 @@ def configure_logging(verbose: bool, quiet: bool) -> None:
 
     # pypdf warns about every malformed structure it recovers from. We report
     # files we cannot read ourselves, so its chatter only helps when debugging.
-    pypdf_logger = logging.getLogger('pypdf')
-    pypdf_logger.handlers[:] = [handler]
-    pypdf_logger.propagate = False
-    pypdf_logger.setLevel(logging.WARNING if verbose else logging.ERROR)
+    # pikepdf likewise logs a traceback when it recovers from a malformed XMP
+    # packet; papertag then just ignores the XMP.
+    for name in ('pypdf', 'pikepdf'):
+        library_logger = logging.getLogger(name)
+        library_logger.handlers[:] = [handler]
+        library_logger.propagate = False
+        library_logger.setLevel(logging.WARNING if verbose else logging.ERROR)
 
 
 # Exit codes: 0 = no failures, 1 = a file failed or bad configuration,

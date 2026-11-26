@@ -5,7 +5,7 @@ import logging
 import pytest
 
 # Loggers that papertag.cli.configure_logging reconfigures.
-_CONFIGURED_LOGGERS = ("papertag", "pypdf")
+_CONFIGURED_LOGGERS = ("papertag", "pypdf", "pikepdf")
 
 
 @pytest.fixture(autouse=True)

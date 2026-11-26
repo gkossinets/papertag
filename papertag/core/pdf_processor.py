@@ -4,13 +4,15 @@ PDF Processor Module
 Extracts text, metadata, and DOIs from PDF files with OCR fallback for scanned documents.
 """
 
+import html
 import logging
 import os
 import re
 import tempfile
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
+import pikepdf
 from pypdf import PdfReader
 
 # OCR libraries (optional)
@@ -55,6 +57,11 @@ class PDFMetadata:
     doi: Optional[str] = None
     extracted_text: str = ""
     used_ocr: bool = False
+    # Where doi/title came from, e.g. "xmp prism:doi", "docinfo /Title", "text".
+    # A DOI read from page text may belong to a cited work; an embedded one
+    # was put there by whoever produced the file.
+    doi_source: Optional[str] = None
+    title_source: Optional[str] = None
 
 
 class PDFProcessor:
@@ -90,6 +97,48 @@ class PDFProcessor:
         r'\d{4} by',
         r'Elsevier|Springer|Wiley|SAGE|IEEE|Oxford University Press|Cambridge University Press'
     ]
+
+    # Embedded metadata. Key names come from a survey of ~400 real PDFs
+    # (publisher downloads, arXiv, and files papertag had already processed).
+    DC_NS = "http://purl.org/dc/elements/1.1/"
+    # PRISM appears as basic/2.0/, 2.1/ and 3.0/; match any version.
+    PRISM_NS_PREFIX = "http://prismstandard.org/namespaces/basic/"
+    XMP_DOI_KEYS = [
+        ("{http://ns.adobe.com/pdfx/1.3/}doi", "xmp pdfx:doi"),
+        ("{http://crossref.org/crossmark/1.0/}DOI", "xmp crossmark:DOI"),
+        (f"{{{DC_NS}}}identifier", "xmp dc:identifier"),
+    ]
+    # /Subject and /Keywords are free text: papertag writes "Journal | DOI: ...",
+    # Elsevier writes a citation ending in "doi:...".
+    DOCINFO_DOI_KEYS = ["/DOI", "/doi", "/Subject", "/Keywords"]
+    LABELED_DOI_FIELDS = {"docinfo /Subject", "docinfo /Keywords"}
+    # Fields papertag never writes, so they still count after it has run.
+    PUBLISHER_DOI_SOURCES = {"xmp prism:doi", "xmp pdfx:doi", "xmp crossmark:DOI",
+                             "docinfo /DOI", "docinfo /doi"}
+
+    JUNK_TITLE_PATTERNS = [
+        r'^(?:title|article|document|manuscript|paper|layout|slide)\b[\s\d_-]*$',
+        r'^untitled\b',
+        r'^microsoft \w+\b',
+        r'^powerpoint presentation\b',
+        r'^copy of\b',
+        r"^(?:author'?s?\s+)?accepted manuscript\b",
+        r'^manuscript id\b',
+        r'^running head\b',
+        r'^electronic copy available\b',
+        r'^(?:paper|article) title\b',
+        r'^title of the (?:paper|article)\b',
+        r'^preparation of papers for\b',
+        r'^instructions for (?:authors|contributors)\b',
+        r'\btemplate\b',
+        r'\.(?:pdf|docx?|rtf|odt|tex|dvi|ps|eps|indd|qxd|pages)$',
+        r'\\',                        # Windows path
+        r'^pii:',                     # Elsevier production ID
+        r'^arxiv:',
+        r'10\.\d{4,9}/',              # a DOI, not a title
+    ]
+    # Share of an embedded title's words that must appear in the page text.
+    TITLE_ON_PAGE_MIN_SHARE = 0.6
 
     def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
@@ -151,22 +200,204 @@ class PDFProcessor:
 
         log.debug("Extracted %d characters of text", len(text))
 
-        # Extract DOI from text
-        doi = self._extract_doi(text)
-        if doi:
-            metadata.doi = doi
-            log.debug("Found DOI: %s", doi)
-
-        # Extract other metadata from text
         if text:
             title, authors, journal = self._extract_metadata_from_text(text)
-            metadata.title = title
             metadata.authors = authors
             metadata.journal = journal
+            if title:
+                metadata.title, metadata.title_source = title, "text"
 
             log.debug("Extracted title=%r authors=%r journal=%r", title, authors, journal)
 
+        text_doi = self._extract_doi(text)
+        if text_doi:
+            metadata.doi, metadata.doi_source = text_doi, "text"
+
+        # What the publisher (or an earlier papertag run) embedded is more
+        # reliable than guessing from page layout, so it overrides the text.
+        embedded_doi, embedded_title = self._read_embedded_metadata(pdf_path, text)
+        if embedded_doi:
+            metadata.doi, metadata.doi_source = embedded_doi
+        if embedded_title:
+            metadata.title, metadata.title_source = embedded_title
+
+        log.debug("DOI=%r (from %s), title=%r (from %s)", metadata.doi, metadata.doi_source,
+                  metadata.title, metadata.title_source)
+
         return metadata
+
+    def _read_embedded_metadata(
+        self, pdf_path: str, page_text: str = ""
+    ) -> Tuple[Optional[Tuple[str, str]], Optional[Tuple[str, str]]]:
+        """Read the DOI and title stored in the PDF's XMP and docinfo.
+
+        Args:
+            pdf_path: Path to the PDF file.
+            page_text: Text of page 1. When there is enough of it, an embedded
+                title is used only if the page shows it.
+
+        Returns:
+            ``(doi, title)``, each a ``(value, source)`` pair or None when the
+            file has no usable value.
+        """
+        candidates_doi: List[Tuple[str, str]] = []
+        candidates_title: List[Tuple[str, str]] = []
+        try:
+            with pikepdf.open(pdf_path) as pdf:
+                xmp = self._read_xmp(pdf)
+                docinfo = {str(k): v for k, v in pdf.docinfo.items()}
+        except Exception as e:
+            log.debug("Could not read embedded metadata from %s: %s", pdf_path, e)
+            return None, None
+
+        # A re-run must not trust what an earlier run wrote: a wrong batch pick
+        # would be confirmed instead of fixed. papertag overwrites the title,
+        # dc:identifier, /Subject and /Keywords, so in a file it has processed
+        # only keys it never writes (publisher keys) are evidence.
+        own_output = self._written_by_papertag(docinfo)
+        if own_output:
+            log.debug("%s was tagged by an earlier run of papertag; ignoring the title "
+                      "and DOI that run wrote", pdf_path)
+
+        for source, value in self._doi_fields(xmp, docinfo):
+            if own_output and source not in self.PUBLISHER_DOI_SOURCES:
+                continue
+            doi = self._embedded_doi(value, labeled=source in self.LABELED_DOI_FIELDS)
+            if doi:
+                candidates_doi.append((doi, source))
+
+        title_fields = () if own_output else (
+            ("xmp dc:title", xmp.get(f"{{{self.DC_NS}}}title")),
+            ("docinfo /Title", docinfo.get("/Title")),
+        )
+        for source, value in title_fields:
+            title = self._clean_embedded_title(value)
+            if not title:
+                continue
+            if not self._title_on_page(title, page_text):
+                log.debug("Ignoring %s %r: not found in the page text", source, title)
+                continue
+            candidates_title.append((title, source))
+
+        distinct = {doi.lower() for doi, _ in candidates_doi}
+        if len(distinct) > 1:
+            log.debug("Embedded DOIs disagree in %s, using the first: %s", pdf_path,
+                      ", ".join(f"{doi} ({src})" for doi, src in candidates_doi))
+
+        return (candidates_doi[0] if candidates_doi else None,
+                candidates_title[0] if candidates_title else None)
+
+    @staticmethod
+    def _written_by_papertag(docinfo: dict) -> bool:
+        """True if docinfo has the identifier layout MetadataUpdater writes.
+
+        It writes /Keywords as exactly "DOI: <doi>" or "ISBN: <isbn>", and
+        /Subject as "<journal> | DOI: <doi>" or "DOI: <doi>" (likewise ISBN).
+        Older versions wrote only /Subject, so either one counts.
+        """
+        keywords = str(docinfo.get("/Keywords", ""))
+        subject = str(docinfo.get("/Subject", ""))
+        if re.fullmatch(r'(?:DOI|ISBN): \S+', keywords):
+            return True
+        return bool(re.search(r'(?:^| \| )(?:DOI|ISBN): \S+$', subject))
+
+    @staticmethod
+    def _read_xmp(pdf: "pikepdf.Pdf") -> dict:
+        """Return XMP properties keyed ``{namespace-uri}name``; empty if unreadable."""
+        try:
+            with pdf.open_metadata(set_pikepdf_as_editor=False, update_docinfo=False) as meta:
+                return dict(meta.items())
+        except Exception as e:
+            log.debug("Unreadable XMP metadata: %s", e)
+            return {}
+
+    def _doi_fields(self, xmp: dict, docinfo: dict) -> Iterator[Tuple[str, object]]:
+        """Yield ``(source, value)`` for every field that may hold the DOI, best first.
+
+        Only named fields are read. Scanning every field for anything
+        DOI-shaped would pick up e.g. Wiley's pdfx:WPS-JOURNALDOI, the
+        journal's own DOI.
+        """
+        for key, value in xmp.items():
+            if key.startswith(f"{{{self.PRISM_NS_PREFIX}") and key.endswith("}doi"):
+                yield "xmp prism:doi", value
+        for key, source in self.XMP_DOI_KEYS:
+            if key in xmp:
+                yield source, xmp[key]
+        for key in self.DOCINFO_DOI_KEYS:
+            if key in docinfo:
+                yield f"docinfo {key}", docinfo[key]
+
+    def _embedded_doi(self, value: object, labeled: bool) -> Optional[str]:
+        """Extract a DOI from one metadata value.
+
+        Args:
+            value: The field value (string, or list/set for XMP arrays).
+            labeled: For free-text fields such as /Subject: accept only a DOI
+                introduced by "doi:", since a bare one may name another work.
+
+        Returns:
+            The DOI, or None if the value does not hold one.
+        """
+        values = value if isinstance(value, (list, set, tuple)) else [value]
+        for item in values:
+            text = str(item).strip()
+            if labeled:
+                match = re.search(r'\bdoi:?\s*(10\.\d{4,9}/[^\s"\'<>|]+)', text, re.IGNORECASE)
+            else:
+                text = re.sub(r'^(?:(?:https?://)?(?:www\.|dx\.)?doi\.org/'
+                              r'|(?:urn:)?(?:info:)?doi[:/]\s*|doi\s+)', '',
+                              text, flags=re.IGNORECASE)
+                match = re.fullmatch(r'(10\.\d{4,9}/\S+)', text)
+            if not match:
+                continue
+            # Not _sanitize_doi: that strips every trailing non-alphanumeric,
+            # but a SICI DOI can end in its '#' check character. A structured
+            # field holds just the DOI, so only sentence punctuation is stray.
+            doi = match.group(1).rstrip('.,;')
+            # "10.1111/(ISSN)1365-2486" identifies a journal, not an article.
+            if "(issn)" in doi.lower():
+                continue
+            return doi
+        return None
+
+    def _title_on_page(self, title: str, page_text: str) -> bool:
+        """True if most words of `title` appear in `page_text`, or there is too
+        little text to tell (scanned page, OCR off).
+
+        A title the page doesn't show was usually left behind by a template or
+        authoring tool, which no junk list can enumerate.
+        """
+        if len(page_text.strip()) < 100:
+            return True
+        # Rejoin words hyphenated across lines ("Re-\ncharge").
+        page = re.sub(r'-\s*\n\s*', '', page_text.lower())
+        page_words = set(re.findall(r'\w+', page))
+        title_words = [w for w in re.findall(r'\w+', title.lower()) if len(w) > 2]
+        if not title_words:
+            return True
+        found = sum(w in page_words for w in title_words)
+        return found / len(title_words) >= self.TITLE_ON_PAGE_MIN_SHARE
+
+    def _clean_embedded_title(self, value: object) -> Optional[str]:
+        """Return a usable title from a /Title or dc:title value, or None for junk.
+
+        Many PDFs carry a title set by the authoring tool rather than the
+        author ("Microsoft Word - draft.docx", "untitled", a filename). Sending
+        that to Crossref is worse than using the page-text heuristic.
+        """
+        if value is None:
+            return None
+        title = html.unescape(re.sub(r'<[^>]+>', '', str(value)))
+        title = " ".join(title.split())
+        if len(title) < 6 or len(title.split()) < 2:
+            return None
+        if any(re.search(pattern, title, re.IGNORECASE) for pattern in self.JUNK_TITLE_PATTERNS):
+            return None
+        letters = sum(c.isalpha() for c in title)
+        if letters < len(title) / 2:
+            return None
+        return title
 
     def _extract_text(self, pdf_path: str) -> str:
         """
