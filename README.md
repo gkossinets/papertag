@@ -40,9 +40,12 @@ For each PDF:
    title are used as search hints.
 2. **Text extraction.** The text of page 1 is extracted. If it has almost no
    text (a scan), it is OCR'd, when OCR is installed.
-3. **Identification.** If a DOI appears on the page, papertag looks it up
-   directly. Otherwise it guesses the title and authors from the page text and
-   searches Crossref, scoring up to five candidates.
+3. **Identification.** If the PDF carries its DOI in its metadata (most
+   publisher downloads do) or prints one on page 1, papertag looks it up
+   directly. Otherwise it searches Crossref with the title stored in the PDF,
+   or one guessed from the page text, plus the authors, and scores up to five
+   candidates. Metadata written by an earlier papertag run is not trusted, so
+   re-running can correct a wrong earlier match.
 4. **Selection.** You pick a candidate (interactive mode), or the top one is
    accepted automatically if it scores high enough (batch mode).
 5. **Writing.** The PDF's document info and XMP metadata are replaced with the
@@ -156,15 +159,19 @@ Crossref finds nothing, you can still enter a DOI or use the filename.
 
 `--batch` never prompts. For each file:
 
-- If a DOI is found on the first page, its Crossref record is applied (score 1.00).
+- If a DOI is found in the PDF's metadata or on the first page, its Crossref
+  record is applied (score 1.00).
 - Otherwise the best search result is applied only if it scores at least 0.80,
   and the file is skipped if not.
 - Files that cannot be read or written are reported as failed, and processing
   continues.
 
-The score is a weighted sum: title similarity up to 0.5, matching year 0.2 (0.1
-if off by one), matching author surname 0.2. A search result therefore needs a
-close title plus a matching year and author to pass the 0.80 cutoff.
+The score averages the evidence the search had: title similarity (weight 0.5,
+by shared words), author surname (0.2, whole words) and year (0.2; half credit
+if off by one). Evidence that is missing, such as an unknown year, doesn't
+count against a result. To pass the 0.80 cutoff a result needs a near-identical
+title plus a matching author or year. A title alone, or an author and year
+without a title, is never enough.
 
 Run a batch with `--log` to review afterwards which files were skipped and why.
 
@@ -237,8 +244,9 @@ Exit status:
 - The title and authors are guessed from the order and capitalization of the
   lines on page 1, which works poorly for some layouts. A DOI printed on the
   first page gives the most reliable result.
-- Without a DOI, scores top out at 0.90, so batch mode skips many papers
-  that interactive mode would identify easily.
+- Without a DOI, batch mode can pick the wrong one of two papers by the same
+  authors whose long titles differ in a single word, or one of two records of
+  the same work (a preprint and the article).
 - Only Crossref is searched. Papers with no Crossref record (most arXiv-only
   preprints, many books, theses) need `--from-filename` or a manual DOI.
 

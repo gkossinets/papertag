@@ -52,6 +52,21 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
 - 2026-11-26: The `pikepdf` logger is treated like `pypdf`: ERROR unless -v (it logs a traceback when
   recovering from malformed XMP).
 - Test fixtures use invented, neutral examples, never titles/DOIs from a real library.
+- 2026-11-26: Scoring (step 3.2) is a weighted average over the evidence the query has (title 0.5,
+  author 0.2, year 0.2; year off by one = half). Caps keep batch (>= 0.80) from accepting on weak
+  evidence: title only <= 0.75, no title <= 0.5, title similarity < 0.85 <= 0.75.
+- 2026-11-26: Title similarity is word-based Dice after stripping markup, accents and stopwords;
+  underscores split words. A damaged word (one edit, same first two letters, 5+ letters) counts 0.9
+  of an exact one. Anything looser equated opposites (supervised/unsupervised, linear/nonlinear).
+  A 4+ word query matching the start of a longer title (first line of a wrapped title) scores 0.9.
+- 2026-11-26: Author match is whole words on family names, letters only (drops affiliation markers);
+  particles are ignored, and one part of a hyphenated name is enough.
+- 2026-11-26: `tests/data/crossref_benchmark.json.gz`: 395 recorded Crossref searches from random
+  public records (sensitive topics filtered out, including candidates) with known answers, plus
+  derived query shapes. `python -m tests.scoring_benchmark` prints batch outcomes;
+  `tests/test_scoring_benchmark.py` guards them. Re-record with `tools/record_crossref_benchmark.py`
+  when the query changes (step 3.4).
+- 2026-11-26: Crossref 429 responses are retried (Retry-After, capped at 60 s).
 
 ## Roadmap
 
@@ -65,9 +80,12 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       Known gaps, judged rare: `dc:title` rdf:Alt returns the first language, not `x-default`;
       raw UTF-8 docinfo `/Title` without BOM decodes as mojibake; a bare journal name as title
       passes the filter; a labeled SICI DOI in `/Subject` is cut at `<`.
-   2. Scoring: max is 0.9 today (journal weight unused) and 0.7 without an author ->
-      normalize by available evidence; token-based title similarity; whole-word author match
-      ("Li" must not match "Lipton"). This is what makes batch mode useful without a DOI.
+   2. ~~Scoring: normalize by available evidence; token-based title similarity; whole-word
+      author match.~~ (done 2026-11-26) Benchmark batch accepts 222 -> 389 of 553 queries.
+      Known gaps, for step 3.5: duplicate records of one work (preprint/article, abstract/paper)
+      tie, and Crossref's order picks; same-author titles differing in one word of a long title
+      ("Biliary" vs "Vascular"); "Part I" vs "Part II" when the right part is missing; an erratum
+      or a longer title starting with the query, when the right paper is missing.
    3. Title = largest font on page 1 (pypdf visitor or pdfminer.six). Fixes most wrong searches,
       which today come from guessing the title by line order and capitalization.
    4. Crossref `query.bibliographic` / `query.author`, `select=`

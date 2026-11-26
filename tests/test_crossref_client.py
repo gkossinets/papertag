@@ -192,9 +192,10 @@ class TestCrossrefClient(unittest.TestCase):
             author="Smith",
             year="2020"
         )
-        # Should have some score (year + partial title, no author)
+        # Some credit (year, shared title words) but a different paper: batch
+        # mode (>= 0.80) must not accept it.
         self.assertGreater(score, 0.20)
-        self.assertLess(score, 0.60)
+        self.assertLess(score, 0.80)
 
     def test_calculate_match_score_year_tolerance(self):
         """Test scoring with ±1 year tolerance."""

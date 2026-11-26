@@ -6,11 +6,12 @@ the Crossref API, with exponential backoff retry logic, rate limiting, and
 sophisticated matching algorithms.
 """
 
+import html
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import List, Optional, Dict, Any
 from urllib.parse import quote_plus
 
@@ -187,41 +188,161 @@ class CrossrefClient:
             f"Connection failed: {str(last_exception)}"
         ) from last_exception
 
-    def _fuzzy_title_similarity(self, title1: str, title2: str) -> float:
-        """
-        Calculate fuzzy similarity between two titles.
+    # Relative weight of each kind of evidence. The score is normalized by the
+    # weights of the evidence the query actually has, so a query without an
+    # author can still reach 1.0 on title and year.
+    TITLE_WEIGHT = 0.5
+    AUTHOR_WEIGHT = 0.2
+    YEAR_WEIGHT = 0.2
+    # A title alone can't tell a paper from others with a similar or generic
+    # title, and author + year alone match everything that author published
+    # that year. Keep both below the batch auto-accept threshold (0.80).
+    TITLE_ONLY_CAP = 0.75
+    NO_TITLE_CAP = 0.5
+    # Author and year can't make up for a title that differs: same-author
+    # papers with similar titles otherwise pass the batch threshold. In the
+    # benchmark (tests/data/crossref_benchmark.json) right answers had title
+    # similarity >= 0.87 and such wrong ones 0.64-0.83.
+    MIN_TITLE_FOR_HIGH = 0.85
+    WEAK_TITLE_CAP = 0.75
+    # Text-layer damage tolerated in words this long; a damaged word counts
+    # this much of an exact one.
+    MIN_FUZZY_WORD_LENGTH = 5
+    FUZZY_WORD_CREDIT = 0.9
+    # A query this many words long that matches the start of a candidate title
+    # is treated as that title's first line (page text cuts wrapped titles).
+    MIN_PREFIX_WORDS = 4
+    PREFIX_DISCOUNT = 0.9
 
-        Uses sequence matching after normalizing the titles (lowercase,
-        removing punctuation, filtering stopwords).
+    @staticmethod
+    def _plain_text(text: str) -> str:
+        """Lowercase text without markup, accents or ligatures."""
+        # Crossref titles carry inline HTML ("TiO<sub>2</sub>", "<i>Quercus</i>").
+        # Drop tags without a space so "TiO<sub>2</sub>" stays one word.
+        text = html.unescape(re.sub(r'<[^>]+>', '', text))
+        text = unicodedata.normalize('NFKD', unicodedata.normalize('NFKC', text))
+        text = ''.join(c for c in text if not unicodedata.combining(c)).casefold()
+        # Rejoin a word split by a line-break hyphen ("rech- arge").
+        return re.sub(r'(\w)- +(\w)', r'\1\2', text)
+
+    def _plain_words(self, text: str) -> List[str]:
+        """Words of `text` (underscores separate words, as in filenames)."""
+        return re.findall(r'[^\W_]+', self._plain_text(text))
+
+    def _title_words(self, title: str) -> List[str]:
+        """Content words of a title, in order."""
+        return [w for w in self._plain_words(title) if w not in self.STOPWORDS]
+
+    @staticmethod
+    def _edit_distance_at_most_one(a: str, b: str) -> bool:
+        """True if one substitution, insertion, deletion or adjacent swap turns a into b."""
+        if abs(len(a) - len(b)) > 1:
+            return False
+        if len(a) == len(b):
+            diffs = [i for i in range(len(a)) if a[i] != b[i]]
+            if len(diffs) == 1:
+                return True
+            return (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                    and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]])
+        shorter, longer = sorted((a, b), key=len)
+        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+
+    def _words_match(self, a: str, b: str) -> bool:
+        """Same word, allowing one slip of page-text damage in a longer word.
+
+        Deliberately narrow: words that differ by a prefix are often opposites
+        (supervised/unsupervised, linear/nonlinear, hyper-/hypotension), so the
+        first two letters must agree and only one character may differ.
+        """
+        if a == b:
+            return True
+        if min(len(a), len(b)) < self.MIN_FUZZY_WORD_LENGTH:
+            return False
+        if not (a.isalpha() and b.isalpha()) or a[:2] != b[:2]:
+            return False
+        return self._edit_distance_at_most_one(a, b)
+
+    def _fuzzy_title_similarity(self, title1: str, title2: str) -> float:
+        """Similarity of two titles by shared content words, 0.0 to 1.0.
+
+        Word-based (Dice coefficient), so unrelated titles that share a word
+        or two score low, which character-sequence matching did not do. A
+        damaged word counts slightly less than an exact one, so the exact
+        title wins a tie. A query that matches the beginning of a longer title
+        (the first line of a wrapped title) scores below a full match.
 
         Args:
-            title1: First title
-            title2: Second title
+            title1: Query title.
+            title2: Candidate title.
 
         Returns:
-            Similarity score between 0.0 and 1.0
+            Similarity between 0.0 and 1.0.
         """
-        # Normalize titles
-        def normalize(text: str) -> str:
-            # Convert to lowercase
-            text = text.lower()
-            # Remove punctuation
-            text = re.sub(r'[^\w\s]', ' ', text)
-            # Extract words
-            words = text.split()
-            # Filter stopwords and short words
-            words = [w for w in words if w not in self.STOPWORDS and len(w) > 2]
-            return ' '.join(words)
-
-        norm1 = normalize(title1)
-        norm2 = normalize(title2)
-
-        if not norm1 or not norm2:
+        query = self._title_words(title1)
+        candidate = self._title_words(title2)
+        if not query or not candidate:
             return 0.0
 
-        # Use SequenceMatcher for fuzzy matching
-        matcher = SequenceMatcher(None, norm1, norm2)
-        return matcher.ratio()
+        # Exact pairs first, so a fuzzy pairing can't take an exact word's partner.
+        unmatched_query = list(query)
+        unused = list(candidate)
+        matched = 0.0
+        for word in list(unmatched_query):
+            if word in unused:
+                unused.remove(word)
+                unmatched_query.remove(word)
+                matched += 1
+        for word in unmatched_query:
+            for i, other in enumerate(unused):
+                if self._words_match(word, other):
+                    del unused[i]
+                    matched += self.FUZZY_WORD_CREDIT
+                    break
+        dice = 2 * matched / (len(query) + len(candidate))
+
+        prefix = 0.0
+        if len(query) >= self.MIN_PREFIX_WORDS and len(query) < len(candidate):
+            if all(self._words_match(q, c) for q, c in zip(query, candidate)):
+                prefix = self.PREFIX_DISCOUNT * matched / len(query)
+        return max(dice, prefix)
+
+    # Particles that don't identify a person on their own ("van der Berg").
+    NAME_PARTICLES = {'van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da',
+                      'dos', 'du', 'la', 'le', 'ter', 'ten', 'af', 'al', 'el', 'bin', 'ibn'}
+
+    def _name_words(self, text: str) -> List[str]:
+        """Letters-only words: drops affiliation markers ("Smith1", "Smith¹", "Smith*")."""
+        return re.findall(r'[^\W\d_]+', self._plain_text(text.replace('\u2019', "'")))
+
+    def _author_matches(self, query_author: str, item: Dict[str, Any]) -> bool:
+        """True if some author's family name appears in the query as whole words.
+
+        Whole words, so "Li" does not match "Lipton". Particles are ignored
+        ("Berg" matches "van der Berg"), and one part of a hyphenated name is
+        enough ("Smith" matches "Smith-Jones"). Given names are ignored.
+        """
+        query_words = set(self._name_words(query_author))
+        for author in item.get('author') or []:
+            family = author.get('family')
+            if not family:
+                continue
+            core = [w for w in self._name_words(family) if w not in self.NAME_PARTICLES]
+            if core and all(w in query_words for w in core):
+                return True
+            if '-' in family:
+                parts = [self._name_words(p) for p in family.split('-')]
+                if any(p and all(w in query_words for w in p) for p in parts):
+                    return True
+        return False
+
+    def _year_similarity(self, query_year: str, item: Dict[str, Any]) -> float:
+        """1.0 for the same year, 0.5 for an adjacent one (online vs print), else 0."""
+        item_year = self._extract_year(item)
+        try:
+            gap = abs(int(item_year) - int(query_year))
+        except (TypeError, ValueError):
+            return 0.0
+        return {0: 1.0, 1: 0.5}.get(gap, 0.0)
 
     def _calculate_match_score(
         self,
@@ -230,61 +351,55 @@ class CrossrefClient:
         author: Optional[str] = None,
         year: Optional[str] = None
     ) -> float:
-        """
-        Calculate match score for a Crossref item.
+        """Score how well a Crossref item matches the query, 0.0 to 1.0.
 
-        Weights:
-        - Title similarity: 0.5 (fuzzy matching)
-        - Year match: 0.2 (exact match or ±1 year)
-        - Author match: 0.2 (family name in query)
-        - Journal match: 0.1 (if journal info available)
+        A weighted average over the evidence the query has (title, author,
+        year); evidence the query lacks neither adds nor subtracts. Evidence
+        the query has but the item lacks counts as a mismatch. Title-only and
+        title-less queries, and titles that aren't a near match, are capped
+        below the batch threshold.
 
         Args:
             item: Crossref API result item
             title: Query title
-            author: Query author
+            author: Query author(s), any format
             year: Query year
 
         Returns:
             Score between 0.0 and 1.0
         """
-        score = 0.0
+        earned = 0.0
+        possible = 0.0
 
-        # Title similarity (weight: 0.5)
-        if title and 'title' in item and item['title']:
-            item_title = item['title'][0]
-            title_similarity = self._fuzzy_title_similarity(title, item_title)
-            score += title_similarity * 0.5
+        similarity = 0.0
+        if title:
+            candidates = [t for t in (item.get('title') or []) if t]
+            subtitle = next((s for s in (item.get('subtitle') or []) if s), None)
+            if candidates and subtitle:
+                candidates.append(f"{candidates[0]}: {subtitle}")
+            similarity = max((self._fuzzy_title_similarity(title, c) for c in candidates),
+                             default=0.0)
+            earned += self.TITLE_WEIGHT * similarity
+            possible += self.TITLE_WEIGHT
 
-        # Year match (weight: 0.2)
+        if author:
+            earned += self.AUTHOR_WEIGHT * self._author_matches(author, item)
+            possible += self.AUTHOR_WEIGHT
+
         if year:
-            item_year = self._extract_year(item)
-            if item_year:
-                # Exact match
-                if item_year == year:
-                    score += 0.2
-                # ±1 year tolerance
-                else:
-                    try:
-                        if abs(int(item_year) - int(year)) == 1:
-                            score += 0.1
-                    except ValueError:
-                        pass
+            earned += self.YEAR_WEIGHT * self._year_similarity(year, item)
+            possible += self.YEAR_WEIGHT
 
-        # Author match (weight: 0.2)
-        if author and 'author' in item and item['author']:
-            author_lower = author.lower()
-            for item_author in item['author']:
-                if 'family' in item_author:
-                    family_name = item_author['family'].lower()
-                    if family_name in author_lower or author_lower in family_name:
-                        score += 0.2
-                        break
-
-        # Journal match (weight: 0.1) - currently not used in search
-        # This is kept for potential future use when journal info is available
-
-        return min(score, 1.0)  # Cap at 1.0
+        if not possible:
+            return 0.0
+        score = earned / possible
+        if not title:
+            score = min(score, self.NO_TITLE_CAP)
+        elif not author and not year:
+            score = min(score, self.TITLE_ONLY_CAP)
+        elif similarity < self.MIN_TITLE_FOR_HIGH:
+            score = min(score, self.WEAK_TITLE_CAP)
+        return min(score, 1.0)
 
     def _extract_year(self, item: Dict[str, Any]) -> Optional[str]:
         """Extract publication year from Crossref item."""
