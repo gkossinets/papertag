@@ -75,10 +75,10 @@ def test_no_matches_offers_manual_doi():
     # display_matches signals a manual DOI entry.
     mgr.ui.display_matches.return_value = ("manual", "10.31219/osf.io/gw7r5_v2")
     mgr.ui.confirm_metadata.return_value = True
-    mgr.crossref_client.fetch_metadata.return_value = {
-        "doi": "10.31219/osf.io/gw7r5_v2", "title": "T", "authors": ["A, B"],
-        "year": "2020", "journal": "J",
-    }
+    mgr.crossref_client.fetch_metadata.return_value = CrossrefMatch(
+        doi="10.31219/osf.io/gw7r5_v2", title="T", authors=["A, B"],
+        year="2020", journal="J", score=1.0,
+    )
 
     result = mgr.process_single_pdf(PDF_PATH)
 
@@ -98,12 +98,32 @@ def test_manual_doi_still_confirms():
     # display_matches signals a manual DOI entry, not a numbered pick.
     mgr.ui.display_matches.return_value = ("manual", "10.1/x")
     mgr.ui.confirm_metadata.return_value = True
-    mgr.crossref_client.fetch_metadata.return_value = {
-        "doi": "10.1/x", "title": "Manual", "authors": ["A, B"],
-        "year": "2020", "journal": "J",
-    }
+    mgr.crossref_client.fetch_metadata.return_value = CrossrefMatch(
+        doi="10.1/x", title="Manual", authors=["A, B"],
+        year="2020", journal="J", score=1.0,
+    )
 
     result = mgr.process_single_pdf(PDF_PATH)
 
     assert result == "completed"
     mgr.ui.confirm_metadata.assert_called_once()
+
+
+def test_doi_lookup_writes_isbn():
+    """A DOI found in the PDF is looked up directly, and an ISBN from that
+    record reaches the metadata written to the file."""
+    mgr = _manager_with_mocks()
+    mgr.batch_mode = True
+    mgr.pdf_processor.extract_metadata.return_value = _extracted(doi="10.1007/b1")
+    mgr.crossref_client.fetch_metadata.return_value = CrossrefMatch(
+        doi="10.1007/b1", title="A Book", authors=["Jane Doe"], year="2019",
+        journal=None, score=1.0, isbn="9783030000000",
+    )
+
+    result = mgr.process_single_pdf(PDF_PATH)
+
+    assert result == "completed"
+    mgr.crossref_client.search.assert_not_called()
+    written = mgr.metadata_updater.update_metadata.call_args[0][1]
+    assert written.isbn == "9783030000000"
+    assert written.doi == "10.1007/b1"

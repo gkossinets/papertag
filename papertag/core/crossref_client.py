@@ -38,6 +38,7 @@ class CrossrefMatch:
     year: Optional[str]
     journal: Optional[str]
     score: float  # 0.0 to 1.0
+    isbn: Optional[str] = None
 
     @property
     def confidence_level(self) -> str:
@@ -380,53 +381,44 @@ class CrossrefClient:
         matches.sort(key=lambda m: m.score, reverse=True)
         return matches[:max_results]
 
-    def fetch_metadata(self, doi: str) -> dict:
+    def fetch_metadata(self, doi: str) -> CrossrefMatch:
         """
         Fetch complete metadata for a given DOI.
 
         Args:
-            doi: The DOI to look up
+            doi: The DOI to look up (bare or as a doi.org URL)
 
         Returns:
-            Dictionary with complete metadata
+            CrossrefMatch with score 1.0, since an exact DOI lookup needs
+            no fuzzy matching.
 
         Raises:
             CrossrefConnectionError: After all retries exhausted
-            CrossrefAPIError: For non-retryable API errors (404, etc.)
+            CrossrefAPIError: For non-retryable API errors (404, etc.) or a
+                response without a 'message' record
         """
-        # Clean DOI
         cleaned_doi = doi.strip()
         if cleaned_doi.startswith('http'):
-            # Extract DOI from URL
             doi_match = re.search(r'(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)', cleaned_doi)
             if doi_match:
                 cleaned_doi = doi_match.group(1)
 
-        # Make API request
-        url = f"https://api.crossref.org/works/{cleaned_doi}"
+        data = self._make_request(f"https://api.crossref.org/works/{cleaned_doi}")
 
-        try:
-            data = self._make_request(url)
-        except (CrossrefConnectionError, CrossrefAPIError):
-            raise
+        item = data.get('message')
+        if not item:
+            raise CrossrefAPIError(f"Crossref returned no record for DOI {cleaned_doi}")
 
-        # Extract metadata
-        if 'message' in data:
-            item = data['message']
-            metadata = {
-                'doi': item.get('DOI'),
-                'title': (item.get('title') or [None])[0],
-                'authors': self._extract_authors(item),
-                'year': self._extract_year(item),
-                'journal': (item.get('container-title') or [None])[0],
-                'publisher': item.get('publisher'),
-                'type': item.get('type'),
-            }
+        isbn = item.get('ISBN')
+        if isinstance(isbn, list):
+            isbn = isbn[0] if isbn else None
 
-            # Add ISBN if available
-            if 'ISBN' in item:
-                metadata['isbn'] = item['ISBN'][0] if isinstance(item['ISBN'], list) else item['ISBN']
-
-            return metadata
-
-        return {}
+        return CrossrefMatch(
+            doi=item.get('DOI') or cleaned_doi,
+            title=(item.get('title') or [''])[0],
+            authors=self._extract_authors(item),
+            year=self._extract_year(item),
+            journal=(item.get('container-title') or [None])[0],
+            score=1.0,
+            isbn=isbn,
+        )

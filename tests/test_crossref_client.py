@@ -12,6 +12,7 @@ Tests cover:
 
 import unittest
 from unittest.mock import Mock, patch, MagicMock
+import os
 import time
 import requests
 
@@ -402,13 +403,44 @@ class TestCrossrefClient(unittest.TestCase):
         }
         mock_request.return_value = mock_response
 
-        metadata = self.client.fetch_metadata('10.1234/test')
+        match = self.client.fetch_metadata('10.1234/test')
 
-        self.assertEqual(metadata['doi'], '10.1234/test')
-        self.assertEqual(metadata['title'], 'Test Article')
-        self.assertEqual(len(metadata['authors']), 1)
-        self.assertEqual(metadata['year'], '2020')
-        self.assertEqual(metadata['journal'], 'Nature')
+        self.assertIsInstance(match, CrossrefMatch)
+        self.assertEqual(match.doi, '10.1234/test')
+        self.assertEqual(match.title, 'Test Article')
+        self.assertEqual(match.authors, ['John Smith'])
+        self.assertEqual(match.year, '2020')
+        self.assertEqual(match.journal, 'Nature')
+        self.assertEqual(match.score, 1.0)
+        self.assertIsNone(match.isbn)
+
+    @patch('papertag.core.crossref_client.requests.request')
+    def test_fetch_metadata_carries_isbn(self, mock_request):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'message': {
+                'DOI': '10.1007/978-3-030-00000-0',
+                'title': ['A Book'],
+                'ISBN': ['9783030000000', '9783030000017'],
+                'type': 'book',
+            }
+        }
+        mock_request.return_value = mock_response
+
+        match = self.client.fetch_metadata('10.1007/978-3-030-00000-0')
+
+        self.assertEqual(match.isbn, '9783030000000')
+
+    @patch('papertag.core.crossref_client.requests.request')
+    def test_fetch_metadata_without_message_raises(self, mock_request):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'status': 'ok'}
+        mock_request.return_value = mock_response
+
+        with self.assertRaises(CrossrefAPIError):
+            self.client.fetch_metadata('10.1234/test')
 
     @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_empty_container_title(self, mock_request):
@@ -434,11 +466,11 @@ class TestCrossrefClient(unittest.TestCase):
         }
         mock_request.return_value = mock_response
 
-        metadata = self.client.fetch_metadata('10.31219/osf.io/gw7r5_v2')
+        match = self.client.fetch_metadata('10.31219/osf.io/gw7r5_v2')
 
-        self.assertEqual(metadata['doi'], '10.31219/osf.io/gw7r5_v2')
-        self.assertEqual(metadata['title'], 'Some Preprint Title')
-        self.assertIsNone(metadata['journal'])
+        self.assertEqual(match.doi, '10.31219/osf.io/gw7r5_v2')
+        self.assertEqual(match.title, 'Some Preprint Title')
+        self.assertIsNone(match.journal)
 
     @patch('papertag.core.crossref_client.requests.request')
     def test_fetch_metadata_clean_doi(self, mock_request):
@@ -476,11 +508,12 @@ class TestCrossrefClientIntegration(unittest.TestCase):
     """
     Integration tests with real Crossref API.
 
-    These tests are optional and can be slow. They make real API calls.
-    Uncomment the @unittest.skip decorator to run them.
+    These make real API calls, so they only run when
+    PAPERTAG_NETWORK_TESTS=1 is set.
     """
 
-    @unittest.skip("Integration test - makes real API calls")
+    @unittest.skipUnless(os.environ.get("PAPERTAG_NETWORK_TESTS") == "1",
+                         "set PAPERTAG_NETWORK_TESTS=1 to call the real Crossref API")
     def test_real_search(self):
         """Test real search with Crossref API."""
         client = CrossrefClient(email="test@example.com")
@@ -498,18 +531,19 @@ class TestCrossrefClientIntegration(unittest.TestCase):
         # Top result should have reasonable score
         self.assertGreater(results[0].score, 0.5)
 
-    @unittest.skip("Integration test - makes real API calls")
+    @unittest.skipUnless(os.environ.get("PAPERTAG_NETWORK_TESTS") == "1",
+                         "set PAPERTAG_NETWORK_TESTS=1 to call the real Crossref API")
     def test_real_fetch_metadata(self):
         """Test real metadata fetch with Crossref API."""
         client = CrossrefClient(email="test@example.com")
 
         # Fetch metadata for a known DOI
-        metadata = client.fetch_metadata('10.1038/nature14539')
+        match = client.fetch_metadata('10.1038/nature14539')
 
-        # Should have complete metadata
-        self.assertIsNotNone(metadata['title'])
-        self.assertGreater(len(metadata['authors']), 0)
-        self.assertIsNotNone(metadata['year'])
+        self.assertEqual(match.doi.lower(), '10.1038/nature14539')
+        self.assertEqual(match.title, 'Deep learning')
+        self.assertGreater(len(match.authors), 0)
+        self.assertEqual(match.year, '2015')
 
 
 if __name__ == '__main__':

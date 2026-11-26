@@ -171,9 +171,7 @@ class PDFMetadataManager:
             if pdf_metadata.doi:
                 # If we have a DOI, fetch metadata directly
                 try:
-                    metadata_dict = self.crossref_client.fetch_metadata(pdf_metadata.doi)
-                    # Convert to CrossrefMatch for consistency
-                    matches = [self._metadata_dict_to_match(metadata_dict, 1.0)]
+                    matches = [self.crossref_client.fetch_metadata(pdf_metadata.doi)]
                 except (CrossrefConnectionError, CrossrefAPIError) as e:
                     if self.ui.verbose:
                         print(f"DOI lookup failed: {e}")
@@ -246,8 +244,7 @@ class PDFMetadataManager:
                     # User entered manual DOI
                     manual_doi = selected_match[1]
                     try:
-                        metadata_dict = self.crossref_client.fetch_metadata(manual_doi)
-                        selected_match = self._metadata_dict_to_match(metadata_dict, 1.0)
+                        selected_match = self.crossref_client.fetch_metadata(manual_doi)
                     except (CrossrefConnectionError, CrossrefAPIError) as e:
                         if not self.ui.quiet:
                             print(f"❌ Failed to fetch metadata for DOI: {e}")
@@ -371,61 +368,6 @@ class PDFMetadataManager:
             self.logger.log_failure(pdf_path, f"Unexpected error: {e}")
             return 'failed'
 
-    def _metadata_dict_to_match(self, metadata: dict, score: float) -> CrossrefMatch:
-        """Convert Crossref metadata dict to CrossrefMatch.
-
-        Handles both:
-        - Raw Crossref API responses (uppercase 'DOI', 'author' as list of dicts)
-        - Processed metadata from fetch_metadata() (lowercase 'doi', 'authors' as list of strings)
-        """
-        authors = []
-
-        # Handle both raw API format and processed format
-        if 'authors' in metadata and isinstance(metadata['authors'], list):
-            # Processed format: already a list of formatted strings
-            authors = metadata['authors']
-        elif 'author' in metadata:
-            # Raw API format: list of author dictionaries
-            for author in metadata['author']:
-                if 'family' in author:
-                    given = author.get('given', '')
-                    authors.append(f"{author['family']}, {given}" if given else author['family'])
-
-        year = None
-        if 'year' in metadata:
-            # Processed format
-            year = metadata['year']
-        elif 'published-print' in metadata:
-            year = str(metadata['published-print']['date-parts'][0][0])
-        elif 'published-online' in metadata:
-            year = str(metadata['published-online']['date-parts'][0][0])
-        elif 'issued' in metadata:
-            year = str(metadata['issued']['date-parts'][0][0])
-
-        journal = None
-        if 'journal' in metadata:
-            # Processed format
-            journal = metadata['journal']
-        elif 'container-title' in metadata and metadata['container-title']:
-            journal = metadata['container-title'][0]
-
-        # Handle both 'doi' and 'DOI' keys
-        doi = metadata.get('doi') or metadata.get('DOI', '')
-
-        # Handle both title formats
-        title = metadata.get('title', '')
-        if isinstance(title, list):
-            title = title[0] if title else ''
-
-        return CrossrefMatch(
-            doi=doi,
-            title=title,
-            authors=authors,
-            year=year,
-            journal=journal,
-            score=score
-        )
-
     def _match_to_metadata_update(self, match: CrossrefMatch) -> MetadataUpdate:
         """Convert CrossrefMatch to MetadataUpdate."""
         return MetadataUpdate(
@@ -433,7 +375,8 @@ class PDFMetadataManager:
             authors='; '.join(match.authors) if match.authors else '',
             year=match.year,
             journal=match.journal,
-            doi=match.doi
+            doi=match.doi,
+            isbn=match.isbn
         )
 
     def _process_from_filename(self, pdf_path: str, filename_hints: FilenameHints) -> str:
