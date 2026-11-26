@@ -88,6 +88,13 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       or a longer title starting with the query, when the right paper is missing.
    3. Title = largest font on page 1 (pypdf visitor or pdfminer.six). Fixes most wrong searches,
       which today come from guessing the title by line order and capitalization.
+      Baseline (2026-11-26, 37 real publisher PDFs, DOI hidden, search path only): the page-text
+      title is usually a header ("ORIGINAL ARTICLE", journal name, "ARTICLE INFO"); batch accepts
+      2/37 right, 0 wrong, and Crossref's top 10 lacks the right paper for 27/37. Filename hints
+      alone (Zotero-style names): 30/36 right, 0 wrong. Also fix the precedence in cli.py: a
+      high-confidence filename title should beat a page-text guess (`title_source == "text"`);
+      today `pdf_metadata.title or filename_hints.title` discards it. (32/37 of these PDFs print
+      their DOI on page 1, so in practice they are found by exact lookup.)
    4. Crossref `query.bibliographic` / `query.author`, `select=`
    5. Batch: require margin over runner-up; `--threshold`
    6. Verify a DOI found in page text against the page's title (reference lists contain
