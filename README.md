@@ -124,6 +124,19 @@ example, to fix a wrong pick). papertag recognizes its own work by the
 without a DOI or ISBN (`--from-filename`, a thesis title page) are processed
 again.
 
+This also skips files tagged by older versions of papertag, including any
+wrong picks those versions made in batch mode, so newer matching rules never
+reach them on their own. In interactive mode, re-running a file to fix a bad
+match just reports it as skipped. To redo a library with the current rules,
+preview the changes first, then apply them:
+
+```sh
+papertag papers/ --batch --force --dry-run   # show what would change
+papertag papers/ --batch --force --log redo.json
+```
+
+With `--log`, `papertag --undo redo.json` reverses the redo if it goes wrong.
+
 ## Options
 
 | Option | Description |
