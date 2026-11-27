@@ -252,9 +252,13 @@ lookup, else Crossref search
       no author unless the filename is `Author - Year - Title`; a title guessed from line order
       (2 of 13) is often wrong, and the user sees it at confirmation; a record without author
       renames to `_Unknown - Year - Title.pdf`; non-English title pages are not recognized.
-   9. OpenAlex as a second search source (agreed 2026-11-26 as its own step). It indexes
-      repository theses and working papers; would help the ~180 no-DOI files in the sample, not
-      only theses. Search currently assumes Crossref; needs a provider seam.
+   9. Deferred (2026-11-26, user's choice): OpenAlex as a second search source, a possible
+      future extension. It indexes repository theses and working papers; would help the ~180
+      no-DOI files in the sample, not only theses. Notes from a first look: search currently
+      assumes Crossref and needs a provider seam; OpenAlex now meters use (title search
+      $1 per 1,000 calls; a free `api_key` gives $1/day), so call it only when Crossref didn't
+      settle a file; many of its added records have no DOI, which raises whether batch may
+      ever apply one (proposed: interactive only, like the title-page record).
 4. UX
    - `--dry-run`; skip already-processed files (`--force` to override)
    - side-by-side current vs new metadata; `--undo LOG`
