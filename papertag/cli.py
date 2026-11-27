@@ -974,6 +974,26 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+class _StderrHandler(logging.StreamHandler):
+    """Writes to the current sys.stderr, flushing stdout first.
+
+    Piped stdout is block-buffered, so without the flush a file's error
+    reaches the terminal or log before that file's own header.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Flush stdout, then write the record to stderr."""
+        self.stream = sys.stderr
+        try:
+            sys.stdout.flush()
+        except (AttributeError, ValueError):  # closed or replaced stdout
+            pass
+        super().emit(record)
+
+
 def configure_logging(verbose: bool, quiet: bool) -> None:
     """Send papertag's diagnostics to stderr at a level set by the flags.
 
@@ -981,7 +1001,7 @@ def configure_logging(verbose: bool, quiet: bool) -> None:
         verbose: Show debug detail.
         quiet: Show errors only.
     """
-    handler = logging.StreamHandler(sys.stderr)
+    handler = _StderrHandler()
     handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     logger = logging.getLogger('papertag')
     # Replace rather than add, so calling this twice doesn't double output.

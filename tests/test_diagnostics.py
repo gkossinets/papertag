@@ -128,3 +128,28 @@ def test_malformed_xmp_is_quiet_unless_verbose(tmp_path, capsys):
     configure_logging(verbose=True, quiet=False)
     PDFProcessor(use_ocr=False).extract_metadata(str(path))
     assert "XMP" in capsys.readouterr().err
+
+
+def test_stdout_is_flushed_before_a_diagnostic(monkeypatch):
+    """Piped stdout is block-buffered; without a flush a file's error shows
+    up on stderr ahead of that file's own header."""
+    events = []
+
+    class Recorder:
+        def __init__(self, name):
+            self.name = name
+
+        def write(self, text):
+            events.append((self.name, text))
+
+        def flush(self):
+            events.append((self.name, "<flush>"))
+
+    monkeypatch.setattr("sys.stdout", Recorder("out"))
+    monkeypatch.setattr("sys.stderr", Recorder("err"))
+    configure_logging(verbose=False, quiet=False)
+    print("Processing: a.pdf")
+    logging.getLogger("papertag.cli").error("a.pdf: broken")
+
+    first_err = next(i for i, (name, _) in enumerate(events) if name == "err")
+    assert ("out", "<flush>") in events[:first_err]

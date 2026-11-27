@@ -30,7 +30,6 @@ class InteractiveUI:
         """
         self.verbose = verbose
         self.quiet = quiet
-        self._last_progress_lines = 0
 
     def display_matches(
         self,
@@ -293,8 +292,11 @@ class InteractiveUI:
         failed: int,
         current_file: str
     ):
-        """
-        Display progress bar and statistics.
+        """Print one progress line after a file.
+
+        Not redrawn in place: each file's own output comes between progress
+        lines, and moving the cursor up to redraw erased it. One plain line
+        also reads well when stdout is piped to a file.
 
         Args:
             current: Current file number (1-indexed)
@@ -302,40 +304,13 @@ class InteractiveUI:
             completed: Number of successfully completed files
             skipped: Number of skipped files
             failed: Number of failed files
-            current_file: Name of file currently being processed
+            current_file: Name of the file just processed (already shown in
+                its header, so not repeated)
         """
         if self.quiet:
             return
-
-        # Clear previous progress lines
-        if self._last_progress_lines > 0:
-            # Move cursor up and clear lines
-            for _ in range(self._last_progress_lines):
-                sys.stdout.write('\033[F\033[K')
-
-        # Calculate progress
-        percentage = (current / total) * 100 if total > 0 else 0
-
-        # Create progress bar
-        bar_width = 30
-        filled = int(bar_width * current / total) if total > 0 else 0
-        bar = "=" * filled + ">" + " " * (bar_width - filled - 1)
-
-        print(f"\nProcessing {total} PDFs...")
-        print(f"[{bar}] {current}/{total} ({percentage:.1f}%)")
-        print()
-        print(f"Completed: {completed}")
-        print(f"Skipped:   {skipped}")
-        print(f"Failed:    {failed}")
-        print(f"Remaining: {total - current}")
-        print()
-
-        # Truncate filename if too long
-        if len(current_file) > 60:
-            current_file = current_file[:57] + "..."
-        print(f"Current: {current_file}")
-
-        self._last_progress_lines = 9
+        print(f"\nProgress: {current}/{total}  completed {completed}, "
+              f"skipped {skipped}, failed {failed}")
 
     def print_summary(
         self,

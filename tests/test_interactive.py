@@ -76,7 +76,6 @@ class TestInteractiveUI(unittest.TestCase):
         ui = InteractiveUI()
         self.assertFalse(ui.verbose)
         self.assertFalse(ui.quiet)
-        self.assertEqual(ui._last_progress_lines, 0)
 
         ui_verbose = InteractiveUI(verbose=True)
         self.assertTrue(ui_verbose.verbose)
@@ -413,7 +412,7 @@ class TestInteractiveUI(unittest.TestCase):
 
     @patch('sys.stdout', new_callable=StringIO)
     def test_show_progress(self, mock_stdout):
-        """Test progress display."""
+        """Progress is one plain line: counts, no cursor movement."""
         self.ui.show_progress(
             current=23,
             total=47,
@@ -424,30 +423,26 @@ class TestInteractiveUI(unittest.TestCase):
         )
 
         output = mock_stdout.getvalue()
-        self.assertIn("Processing 47 PDFs", output)
+        self.assertEqual(output.strip().count("\n"), 0)
         self.assertIn("23/47", output)
-        self.assertIn("48.9%", output)
-        self.assertIn("Completed: 20", output)
-        self.assertIn("Skipped:   2", output)
-        self.assertIn("Failed:    1", output)
-        self.assertIn("Remaining: 24", output)
-        self.assertIn("smith_2020.pdf", output)
+        self.assertIn("completed 20", output)
+        self.assertIn("skipped 2", output)
+        self.assertIn("failed 1", output)
+        self.assertNotIn("\033", output)
 
     @patch('sys.stdout', new_callable=StringIO)
-    def test_show_progress_long_filename(self, mock_stdout):
-        """Test progress display with very long filename."""
-        long_filename = "a" * 100 + ".pdf"
-        self.ui.show_progress(
-            current=1,
-            total=10,
-            completed=0,
-            skipped=0,
-            failed=0,
-            current_file=long_filename
-        )
+    def test_show_progress_never_erases_earlier_output(self, mock_stdout):
+        """Each file's output is printed between progress lines; a redraw
+        that moves the cursor up would erase it."""
+        for i in range(1, 4):
+            print(f"output of file {i}")
+            self.ui.show_progress(current=i, total=3, completed=i, skipped=0,
+                                  failed=0, current_file=f"f{i}.pdf")
 
         output = mock_stdout.getvalue()
-        self.assertIn("...", output)
+        self.assertNotIn("\033", output)
+        for i in range(1, 4):
+            self.assertIn(f"output of file {i}", output)
 
     def test_show_progress_quiet_mode(self):
         """Test that quiet mode doesn't show progress."""
