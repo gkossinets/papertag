@@ -74,14 +74,14 @@ cd papertag
 uv tool install -e '.[ocr]'      # or: pipx install -e '.[ocr]'
 ```
 
-Crossref asks API clients to identify themselves with an email address, which
-gets them into its faster "polite pool". Set it once:
+An email address is optional. Crossref puts clients that send one into its
+faster "polite pool"; without one, papertag uses the public pool. Set it once:
 
 ```sh
 export CROSSREF_EMAIL="you@example.com"
 ```
 
-or pass `--email` on each run. It is not needed for `--from-filename`.
+or pass `--email` on each run.
 
 **OCR (optional).** Reading scanned PDFs needs the `ocr` extra (installed
 above) plus Tesseract and Poppler:
@@ -119,7 +119,7 @@ once, even if it matches more than one argument.
 
 | Option | Description |
 |--------|-------------|
-| `-e`, `--email EMAIL` | Email for Crossref (default: `$CROSSREF_EMAIL`) |
+| `-e`, `--email EMAIL` | Email for Crossref's polite pool, optional (default: `$CROSSREF_EMAIL`) |
 | `-b`, `--batch` | Apply the best match without asking if it scores at least the threshold and clearly beats the runner-up; skip the file otherwise |
 | `-t`, `--threshold SCORE` | Minimum score for `--batch` to apply a search result (default: 0.80) |
 | `-r`, `--recursive` | Include PDFs in subdirectories |

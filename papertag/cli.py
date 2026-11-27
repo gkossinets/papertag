@@ -278,7 +278,7 @@ class PDFMetadataManager:
         Initialize the orchestrator.
 
         Args:
-            email: Email for Crossref API (polite pool), not required for --from-filename
+            email: Email for Crossref's polite pool (optional)
             use_ocr: Enable OCR fallback for scanned documents
             ocr_pages: Number of pages to OCR (default: 1)
             keep_backup: Keep .bak copy of original files
@@ -301,8 +301,8 @@ class PDFMetadataManager:
             use_ocr=use_ocr,
             ocr_pages=ocr_pages,
         )
-        # Only initialize Crossref client if not using from_filename mode
-        if not from_filename and email:
+        # --from-filename never queries Crossref.
+        if not from_filename:
             self.crossref_client = CrossrefClient(
                 email=email,
                 retries=retries
@@ -825,14 +825,14 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  %(prog)s paper.pdf --email "me@example.com"
+  %(prog)s paper.pdf
   %(prog)s papers/ --batch --backup --recursive
   %(prog)s *.pdf --no-rename --email "me@example.com"
   %(prog)s "Smith - 2020 - Title.pdf" --from-filename
   %(prog)s papers/ --from-filename --batch
 
 Environment Variables:
-  CROSSREF_EMAIL    Email for Crossref API (can be used instead of --email)
+  CROSSREF_EMAIL    Email for Crossref's faster polite pool (optional; or use --email)
         '''
     )
 
@@ -852,7 +852,7 @@ Environment Variables:
     # Optional arguments
     parser.add_argument(
         '--email', '-e',
-        help='Email for Crossref API (or set CROSSREF_EMAIL env var)'
+        help="Email for Crossref's faster polite pool (optional; or set CROSSREF_EMAIL)"
     )
 
     parser.add_argument(
@@ -944,17 +944,9 @@ def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
     Returns:
         Tuple of (valid, error_message)
     """
-    # Check for email (not required for --from-filename mode)
-    if not args.from_filename:
-        if not args.email:
-            args.email = os.environ.get('CROSSREF_EMAIL')
-
-            if not args.email:
-                return False, (
-                    "Error: Email required for Crossref API.\n"
-                    "Provide via --email or set CROSSREF_EMAIL environment variable.\n"
-                    "Or use --from-filename to set metadata from the filename without Crossref."
-                )
+    # Optional: without an email, Crossref serves the slower public pool.
+    if not args.email:
+        args.email = os.environ.get('CROSSREF_EMAIL') or None
 
     # Check inputs exist (glob patterns are checked when expanded)
     for input_path in args.inputs:

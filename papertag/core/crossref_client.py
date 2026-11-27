@@ -125,7 +125,7 @@ class CrossrefClient:
 
     def __init__(
         self,
-        email: str,
+        email: Optional[str] = None,
         retries: int = 3,
         timeout: int = 30,
         backoff_factor: float = 1.0
@@ -134,7 +134,8 @@ class CrossrefClient:
         Initialize Crossref client.
 
         Args:
-            email: Your email (for polite pool and contact)
+            email: Your email, for Crossref's faster "polite pool". Without
+                one, requests go to the public pool.
             retries: Number of retry attempts for failed requests
             timeout: Request timeout in seconds
             backoff_factor: Base delay for exponential backoff (seconds)
@@ -146,10 +147,10 @@ class CrossrefClient:
         self.last_request_time = 0
         self.min_request_interval = 0.5  # Rate limiting: 0.5s between requests
 
-        # User-Agent for polite pool
-        self.headers = {
-            'User-Agent': f'papertag/{__version__} (mailto:{email})'
-        }
+        agent = f'papertag/{__version__}'
+        if email:
+            agent += f' (mailto:{email})'
+        self.headers = {'User-Agent': agent}
 
     def _wait_for_rate_limit(self):
         """Ensure we respect rate limiting between requests."""

@@ -100,3 +100,30 @@ def test_exit_one_when_no_pdfs_found(tmp_path, capsys):
     code = main([str(tmp_path), "--from-filename"])
     assert code == 1
     assert "No PDF files found" in capsys.readouterr().err
+
+
+# --- the Crossref email is optional -------------------------------------------
+
+def test_runs_without_email(tmp_path, monkeypatch):
+    """No --email and no CROSSREF_EMAIL: search Crossref's public pool."""
+    monkeypatch.delenv("CROSSREF_EMAIL", raising=False)
+    files = _make_pdfs(tmp_path, ["a.pdf"])
+    assert _run_main(files + ["--quiet"], lambda path: "completed") == 0
+
+
+def test_manager_without_email_still_has_a_crossref_client():
+    from papertag.cli import PDFMetadataManager
+    assert PDFMetadataManager(email=None).crossref_client is not None
+
+
+def test_client_without_email_sends_no_mailto():
+    from papertag.core import CrossrefClient
+    client = CrossrefClient()
+    assert "mailto" not in client.headers["User-Agent"]
+    assert client.headers["User-Agent"].startswith("papertag/")
+
+
+def test_client_with_email_sends_mailto():
+    from papertag.core import CrossrefClient
+    agent = CrossrefClient(email="me@example.invalid").headers["User-Agent"]
+    assert "mailto:me@example.invalid" in agent
