@@ -41,6 +41,66 @@ log = logging.getLogger(__name__)
 FILENAME_TRUSTED = 0.85
 
 
+# Page-1 DOIs looked up per file before giving up and searching. A page with
+# more than one DOI is uncommon (22 of 400 sampled), and each lookup is a request.
+MAX_PAGE_DOI_LOOKUPS = 3
+
+
+def lookup_doi(client: CrossrefClient, pdf_metadata: PDFMetadata,
+               rejected: Optional[List[CrossrefMatch]] = None) -> Optional[CrossrefMatch]:
+    """Fetch the record for the PDF's own DOI, or None to search instead.
+
+    An embedded DOI (put there by the publisher) is trusted. DOIs read from
+    page 1 are tried best first, and a record counts only if its title is on
+    the page (CrossrefClient.shown_on_page): the first DOI on a page can be a
+    cited work's or the supplement's.
+
+    Args:
+        client: Crossref client.
+        pdf_metadata: What was extracted from the PDF.
+        rejected: If given, records that failed the page check are appended
+            with score 0.0. A damaged text layer can fail the paper's own
+            record, so interactive mode still offers them.
+
+    Returns:
+        The record, with score 1.0, or None. Crossref errors are logged, not
+        raised: the caller then searches, which reports a network failure.
+    """
+    embedded = pdf_metadata.doi if pdf_metadata.doi_source != "text" else None
+    if embedded:
+        try:
+            return client.fetch_metadata(embedded)
+        except CrossrefConnectionError as e:
+            log.warning("Lookup of DOI %s failed: %s", embedded, e)
+            return None
+        except CrossrefAPIError as e:
+            log.warning("Lookup of DOI %s failed: %s", embedded, e)
+
+    page_dois = list(pdf_metadata.doi_candidates)
+    if not page_dois and pdf_metadata.doi and not embedded:
+        page_dois = [pdf_metadata.doi]
+    page_dois = [d for d in page_dois if not embedded or d.lower() != embedded.lower()]
+    for doi in page_dois[:MAX_PAGE_DOI_LOOKUPS]:
+        try:
+            match = client.fetch_metadata(doi)
+        except CrossrefConnectionError as e:
+            log.warning("Lookup of DOI %s failed: %s", doi, e)
+            return None
+        except CrossrefAPIError as e:
+            # Usually a DOI damaged by text extraction.
+            log.info("DOI %s from page 1 not found in Crossref: %s", doi, e)
+            continue
+        if client.shown_on_page(match, pdf_metadata.extracted_text):
+            return match
+        log.info("DOI %s on page 1 is for another work (%r); not using it", doi, match.title)
+        if rejected is not None:
+            match.score = 0.0
+            rejected.append(match)
+    if len(page_dois) > MAX_PAGE_DOI_LOOKUPS:
+        log.info("Tried %d of %d DOIs on page 1", MAX_PAGE_DOI_LOOKUPS, len(page_dois))
+    return None
+
+
 class SearchQuery(NamedTuple):
     """What papertag searches Crossref with.
 
@@ -217,17 +277,15 @@ class PDFMetadataManager:
 
             query = search_query(pdf_metadata, filename_hints)
 
-            if pdf_metadata.doi:
-                # If we have a DOI, fetch metadata directly
-                try:
-                    matches = [self.crossref_client.fetch_metadata(pdf_metadata.doi)]
-                except (CrossrefConnectionError, CrossrefAPIError) as e:
-                    log.warning("Lookup of DOI %s failed, searching instead: %s",
-                                pdf_metadata.doi, e)
-                    # Fall back to search
-                    matches = self._search(query)
+            rejected: List[CrossrefMatch] = []
+            doi_match = lookup_doi(self.crossref_client, pdf_metadata, rejected=rejected)
+            if doi_match:
+                matches = [doi_match]
             else:
                 matches = self._search(query)
+                # Last, at 0.00: never auto-accepted, but there to pick.
+                found = {m.doi.lower() for m in matches}
+                matches += [m for m in rejected if m.doi.lower() not in found]
 
             if not matches and self.batch_mode:
                 if not self.ui.quiet:

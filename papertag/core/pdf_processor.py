@@ -10,7 +10,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import pikepdf
@@ -63,6 +63,9 @@ class PDFMetadata:
     # was put there by whoever produced the file.
     doi_source: Optional[str] = None
     title_source: Optional[str] = None
+    # Every DOI on page 1, repaired and best first. The first may be a cited
+    # work's or the supplement's, so each is checked against the page.
+    doi_candidates: List[str] = field(default_factory=list)
     # Page 1 carries a preprint server's stamp; on a score tie the preprint
     # record then beats the published article.
     preprint: bool = False
@@ -107,9 +110,20 @@ class PDFProcessor:
         r'(?:doi|DOI):?\s*(10\.\d{4,9}/[^\s"\'<>]+)',
         r'https?://doi\.org/(10\.\d{4,9}/[^\s"\'<>]+)',
         r'https?://(doi\.org/10\.\d{4,9}/[^\s"\'<>]+)',
-        r'(?:^|\s|[^\w.])(10\.\d{4,9}/[^\s"\'<>]+)(?:$|\s|[^\w.])',
+        # Zero-width boundaries, so DOIs one space apart are all found.
+        r'(?<![\w.])(10\.\d{4,9}/[^\s"\'<>]+)(?![\w.])',
         r'doi\.org/(10\.\d{4,9}/[^\s"\'<>]+)'
     ]
+
+    # Text extraction breaks a long DOI after a hyphen ("annurev-x-012119-\n045404").
+    DOI_LINE_BREAK = re.compile(r'(10\.\d{4,9}/\S*-)[ \t]*\n\s*(?=\w)')
+    # The supplementary material's DOI (APA, PNAS): its record is titled
+    # "Supplemental Material for ..." and has no authors.
+    DOI_SUPPLEMENT_SUFFIX = re.compile(r'(?:\.supp|/-/dcsupplemental)$', re.IGNORECASE)
+    # What follows a DOI's copy when a footer glues on the next word
+    # ("...1234the") or a URL continues ("/9002026"). A digit after the clean
+    # copy is not damage: 10.1/x.1 and 10.1/x.12 are different works.
+    DOI_DAMAGE = re.compile(r'[a-zA-Z/]')
 
     # Blacklist patterns for filtering out non-title lines
     TITLE_BLACKLIST_PATTERNS = [
@@ -275,9 +289,9 @@ class PDFProcessor:
         if font_title:
             metadata.title, metadata.title_source = font_title, "font size"
 
-        text_doi = self._extract_doi(text)
-        if text_doi:
-            metadata.doi, metadata.doi_source = text_doi, "text"
+        metadata.doi_candidates = self._extract_dois(text)
+        if metadata.doi_candidates:
+            metadata.doi, metadata.doi_source = metadata.doi_candidates[0], "text"
 
         # What the publisher (or an earlier papertag run) embedded is more
         # reliable than guessing from page layout, so it overrides the text.
@@ -659,29 +673,47 @@ class PDFProcessor:
         return doi
 
     def _extract_doi(self, text: str) -> Optional[str]:
-        """
-        Extract DOI from text using multiple patterns.
+        """Return the best DOI in `text` (see _extract_dois), or None."""
+        dois = self._extract_dois(text)
+        return dois[0] if dois else None
+
+    def _extract_dois(self, text: str) -> List[str]:
+        """Every distinct DOI in `text`, repaired, best first.
+
+        Labeled DOIs ("doi: ...") come first, then doi.org links, then bare
+        ones, each in page order. A later copy with a glued-on word or URL path
+        is dropped. A later, shorter copy is kept after the earlier one but
+        never replaces it: it is either the clean copy of a damaged DOI or a
+        DOI cut where a line wrapped, and only a lookup can tell which.
 
         Args:
-            text: Text to search for DOI
+            text: Page text.
 
         Returns:
-            DOI if found, None otherwise
+            DOIs, possibly empty.
         """
+        text = self.DOI_LINE_BREAK.sub(r'\1', text)
+        dois: List[str] = []
         for pattern in self.DOI_PATTERNS:
-            match = re.search(pattern, text)
-            if match:
-                # Extract the DOI
-                doi = match.group(1)
+            for match in re.finditer(pattern, text):
+                doi = re.sub(r'^doi\.org/', '', match.group(1))
+                doi = self.DOI_SUPPLEMENT_SUFFIX.sub('', self._sanitize_doi(doi))
+                self._add_doi(dois, doi)
+        return dois
 
-                # Remove "doi.org/" prefix if present
-                if "doi.org/" in doi:
-                    doi = re.sub(r'doi\.org/', '', doi)
+    def _add_doi(self, dois: List[str], doi: str) -> None:
+        """Add `doi` to `dois` unless it repeats one already there."""
+        lower = doi.lower()
+        for known in dois:
+            known_lower = known.lower()
+            if lower == known_lower or self._is_damaged_copy(lower, known_lower):
+                return
+        dois.append(doi)
 
-                doi = self._sanitize_doi(doi)
-                return doi
-
-        return None
+    def _is_damaged_copy(self, longer: str, shorter: str) -> bool:
+        """True if `longer` is `shorter` with a glued-on word or URL path."""
+        return (longer.startswith(shorter) and len(longer) > len(shorter)
+                and bool(self.DOI_DAMAGE.match(longer[len(shorter)])))
 
     def _extract_metadata_from_text(self, text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """

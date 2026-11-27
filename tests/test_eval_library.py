@@ -105,3 +105,33 @@ def test_pdf_files_are_not_modified(library, capsys):
     before = {p: p.read_bytes() for p in library.iterdir()}
     run([str(library), "--no-cache"], [crossref_item("10.1016/j.jhydrol.2019.01.001")], capsys)
     assert {p: p.read_bytes() for p in library.iterdir()} == before
+
+
+def run_by_url(args, records, items, capsys):
+    """Serve DOI lookups from `records` (404 if missing) and searches with `items`."""
+    def request(method, url, **kwargs):
+        if "/works/" in url:
+            doi = url.split("/works/", 1)[1]
+            if doi in records:
+                return Mock(status_code=200, headers={}, json=lambda: {"message": records[doi]})
+            return Mock(status_code=404, headers={}, json=lambda: {})
+        return respond(items)
+    with patch("papertag.core.crossref_client.requests.request", side_effect=request), \
+         patch("papertag.core.crossref_client.time.sleep"):
+        code = eval_library.main(args)
+    return code, capsys.readouterr()
+
+
+def test_page_dois_are_checked_against_the_page(tmp_path, capsys):
+    """A cited work's DOI first on the page is passed over for the paper's own."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    own = "10.1016/j.jhydrol.2019.01.001"
+    make_text_pdf(lib / "a.pdf", BODY + ["Compare doi:10.5555/cited.1", f"https://doi.org/{own}"],
+                  xmp=xmp_packet(f'{PRISM} prism:doi="{own}">'))
+    records = {own: crossref_item(own),
+               "10.5555/cited.1": crossref_item("10.5555/cited.1", title="Coral reef recovery")}
+    code, out = run_by_url([str(lib), "--no-cache"], records, [crossref_item(own)], capsys)
+    assert code == 0
+    assert "first DOI unchecked: right 0, a different one 1" in out.out
+    assert "checked against the page: right 1, wrong 0, none 0" in out.out

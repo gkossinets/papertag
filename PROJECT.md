@@ -109,6 +109,19 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   rank_key already chose between them). That exclusion does not check they're the same work. The
   benchmark replay and `tools/eval_library.py` call the same function. Margin is a constant, not
   a flag: 0.02-0.05 give the same benchmark result, 0.10 costs 7 more right accepts.
+- 2026-11-26: Page-1 DOIs (step 3.6). `PDFProcessor._extract_dois` collects every DOI on page 1,
+  best first (labeled, then doi.org links, then bare; page order within each), into
+  `PDFMetadata.doi_candidates`. Repairs: a DOI broken after a hyphen at a line end is rejoined;
+  `.supp` and `/-/DCSupplemental` are stripped; a later copy with a glued-on word or URL path
+  (next char a letter or `/`) is dropped. A later *shorter* copy is kept after the earlier one,
+  never in its place: it may be a clean copy or a DOI cut at a wrap, and only a lookup can tell.
+  `cli.lookup_doi`: an embedded DOI is trusted; otherwise up to 3 page DOIs are fetched and the
+  first whose record passes `CrossrefClient.shown_on_page` wins, else search. The check: not a
+  supplement record ("Supplementary Materials for ..."), has title words, and >= 60% of them are
+  on the page (a 5+ letter word also counts inside the page text with spaces removed, for
+  run-together text layers and CJK). Rejected records are appended after search results at score
+  0.00, so interactive users can pick one and batch never accepts one. Connection errors stop
+  the lookups; 404s move to the next DOI.
 
 ## Roadmap
 
@@ -159,8 +172,20 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       reprint), well ahead of everything else. Catching those needs a different signal (record
       type, page count, a DOI on the page). Real-PDF eval (`tools/eval_library.py`) not re-run
       this session; it shares `batch_choice`, so re-run it on the same 37 files to compare.
-   6. Verify a DOI found in page text against the page's title (reference lists contain
-      other papers' DOIs)
+   6. ~~Verify a DOI found in page text against the page's title.~~ (done 2026-11-26) Survey of
+      the 400-PDF sample: 214 have a page-1 DOI, 22 more than one; none of the first DOIs
+      belonged to a cited work that resolved. What went wrong was damage: 2 DOIs broken at a
+      line end and 2 supplement DOIs (one resolved to a "Supplemental Material for ..." record
+      with no authors and would have been written), all now right; 3 unrepairable (garbled,
+      unregistered, one footnote citation that 404s) search as before. One right record is
+      now rejected (run-together text plus a damaged "fi" ligature); search finds it from the
+      filename. Real-PDF eval (37 files): unchanged, 32/7/30 right, 0 wrong (also confirms the
+      step 3.5 margin cost nothing there). Known gaps, for later: a cited work whose reference
+      on page 1 prints its title passes the check if its DOI is tried first (labeled `doi:`
+      references rank ahead of a `doi.org` header link); fix by comparing the record title to
+      the page's main title (`PDFMetadata.title`) or scoring all candidates. Not handled either:
+      DOIs wrapped without a hyphen (the cut copy is tried, then search), dropped ligatures
+      ("Classication"), a Crossref title in another language than the page.
    7. arXiv IDs, ISBNs
 4. UX
    - `--dry-run`; skip already-processed files (`--force` to override)

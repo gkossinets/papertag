@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import logging
@@ -34,7 +35,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from papertag import __version__  # noqa: E402
-from papertag.cli import SearchQuery, collect_pdf_files, search_query  # noqa: E402
+from papertag.cli import SearchQuery, collect_pdf_files, lookup_doi, search_query  # noqa: E402
 from papertag.core import FilenameHints, PDFMetadata, PDFProcessor, parse_filename  # noqa: E402
 from papertag.core.crossref_client import (BATCH_THRESHOLD, CrossrefClient,  # noqa: E402
                                            batch_choice)
@@ -107,9 +108,14 @@ def evaluate_file(processor: PDFProcessor, client: CachingClient, path: str,
     meta = processor.extract_metadata(path)
     hints = parse_filename(Path(path).name)
     page_doi = processor._extract_doi(meta.extracted_text)
+    # The DOI path as papertag takes it when nothing is embedded: page DOIs,
+    # each checked against the page.
+    checked = lookup_doi(client, dataclasses.replace(meta, doi=None, doi_source=None))
     record: Dict[str, Any] = {
         "file": path, "truth": truth,
         "page_doi": "none" if not page_doi else "right" if page_doi.lower() == truth else "other",
+        "page_doi_checked": ("none" if not checked
+                             else "right" if checked.doi.lower() == truth else "wrong"),
         "title": meta.title, "title_source": meta.title_source,
     }
     queries = {
@@ -130,8 +136,11 @@ def summarize(records: List[Dict[str, Any]], excluded: int, failed: int) -> str:
     if not records:
         return "\n".join(lines)
     page = Counter(r["page_doi"] for r in records)
-    lines.append(f"DOI printed on page 1: right {page['right']}, a different one {page['other']}, "
-                 f"none {page['none']}  (a page DOI means an exact lookup in normal use)")
+    checked = Counter(r["page_doi_checked"] for r in records)
+    lines.append(f"DOIs on page 1, first DOI unchecked: right {page['right']}, "
+                 f"a different one {page['other']}, none {page['none']}")
+    lines.append(f"  checked against the page: right {checked['right']}, wrong {checked['wrong']}, "
+                 f"none {checked['none']}  (papertag uses this record; none: it searches)")
     lines.append("")
     lines.append(f"{'query from':<10} {'right':>6} {'wrong':>6} {'skip':>6} {'no query':>9} "
                  f"{'in results':>11}")

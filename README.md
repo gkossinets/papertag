@@ -41,8 +41,10 @@ For each PDF:
 2. **Text extraction.** The text of page 1 is extracted. If it has almost no
    text (a scan), it is OCR'd, when OCR is installed.
 3. **Identification.** If the PDF carries its DOI in its metadata (most
-   publisher downloads do) or prints one on page 1, papertag looks it up
-   directly. Otherwise it searches Crossref with the title stored in the PDF,
+   publisher downloads do), papertag looks it up directly. A DOI printed on
+   page 1 is looked up too, but its record is used only if its title appears
+   on the page: page 1 can also carry a cited paper's DOI or the DOI of the
+   supplementary material. Otherwise it searches Crossref with the title stored in the PDF,
    or one guessed from the page text, plus the authors, and scores up to five
    candidates. Metadata written by an earlier papertag run is not trusted, so
    re-running can correct a wrong earlier match.
@@ -160,8 +162,12 @@ Crossref finds nothing, you can still enter a DOI or use the filename.
 
 `--batch` never prompts. For each file:
 
-- If a DOI is found in the PDF's metadata or on the first page, its Crossref
-  record is applied (score 1.00).
+- If the PDF's metadata carries a DOI, its Crossref record is applied (score
+  1.00). So is the record for a DOI printed on page 1, if that record's title
+  appears on the page. Up to three page-1 DOIs are tried, best first: labeled
+  ones (`doi: ...`), then `doi.org` links, then bare ones. A DOI split across
+  two lines after a hyphen is rejoined, and a supplementary-material suffix
+  (`.supp`, `/-/DCSupplemental`) is dropped.
 - Otherwise the best search result is applied only if it scores at least the
   threshold (0.80, or `--threshold`) and leads the next candidate by at least
   0.05. Two near-equal candidates mean papertag can't tell which paper the file
@@ -262,10 +268,16 @@ Exit status:
   stamp (arXiv, bioRxiv, SSRN, ...), otherwise the article. It does not check
   that the two really are the same paper. Run batches with `--log` and look
   over the renames.
+- A DOI printed on page 1 is checked only by whether its record's title
+  appears somewhere on the page. A cited paper whose full reference, title
+  included, is on page 1 can pass that check and be applied instead. In a
+  400-PDF sample this did not happen, but nothing prevents it. A page whose
+  text layer is badly damaged can fail the paper's own record; papertag then
+  searches, and interactive mode lists the record last at 0.00.
 - Only Crossref is searched. Papers with no Crossref record (most arXiv-only
   preprints, many books, theses) need `--from-filename` or a manual DOI.
 
-Improvements to all three are planned; see the roadmap in
+Improvements to these are planned; see the roadmap in
 [PROJECT.md](PROJECT.md).
 
 ## Development
@@ -299,7 +311,8 @@ python tools/eval_library.py -r ~/Papers   # your own PDFs (sends queries to Cro
 ```
 
 `tools/eval_library.py` uses the DOI that publishers embed in many PDFs as the
-right answer. It hides that DOI, runs papertag's search, and counts right
+right answer. It hides that DOI, checks the page-1 DOIs as papertag does, runs
+papertag's search, and counts right
 accepts, wrong accepts and skips for three query sources: what papertag sends,
 page metadata only, and the filename only. Crossref responses are cached in
 `~/.cache/papertag/eval-crossref`, so a rerun after a code change compares like

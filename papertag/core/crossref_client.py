@@ -266,6 +266,56 @@ class CrossrefClient:
     MIN_PREFIX_WORDS = 4
     PREFIX_DISCOUNT = 0.9
 
+    # A record read off page 1 by its DOI must have this share of its title's
+    # words (3+ letters, no stopwords) on the page. On ~210 page DOIs that
+    # resolved in a 400-PDF sample, all but one right record had >= 0.8; the
+    # exception was a page whose text layer runs words together.
+    PAGE_TITLE_MIN_SHARE = 0.6
+    # Below this many characters of page text there is nothing to check against.
+    MIN_PAGE_TEXT = 100
+    # The supplement's record repeats the paper's title, so its words are on
+    # the page; Crossref files it as a journal-article without authors.
+    SUPPLEMENT_TITLE = re.compile(
+        r'^\s*(?:supplement(?:al|ary)?|supporting)\s+(?:materials?|information|data|info)\b',
+        re.IGNORECASE)
+    # Some text layers drop the spaces between words ("GlacialValleysof..."),
+    # and Chinese or Japanese titles have none. A title word this long also
+    # counts if it is in the page text with all spaces removed.
+    MIN_RUN_TOGETHER_WORD = 5
+
+    def shown_on_page(self, match: CrossrefMatch, page_text: str) -> bool:
+        """True if a record looked up by a page-1 DOI is the paper on that page.
+
+        A DOI on page 1 can be a cited work's or the supplement's. The paper's
+        own record has its title on the page; another work's mostly doesn't.
+
+        Args:
+            match: The record fetched for the DOI.
+            page_text: Text of page 1 (OCR text for a scanned page).
+
+        Returns:
+            False for a supplement record, a record without title words to
+            check, or a title mostly missing from the page; True otherwise,
+            including when the page has too little text to tell.
+        """
+        if self.SUPPLEMENT_TITLE.match(self._plain_text(match.title or '')):
+            return False
+        if len(page_text.strip()) < self.MIN_PAGE_TEXT:
+            return True
+        # A hyphen at a line end splits a word ("High-\nlands") or ends the
+        # first half of a compound ("glacier-\nfed"); count both readings.
+        joined = re.sub(r'-\s*\n\s*', '', page_text)
+        page_words = set(self._plain_words(page_text)) | set(self._plain_words(joined))
+        squashed = ''.join(self._plain_words(joined))
+        title_words = [w for w in self._title_words(match.title or '') if len(w) > 2]
+        if not title_words:
+            # Component and dataset records: nothing to confirm them by.
+            return False
+        shown = sum(w in page_words
+                    or (len(w) >= self.MIN_RUN_TOGETHER_WORD and w in squashed)
+                    for w in title_words)
+        return shown / len(title_words) >= self.PAGE_TITLE_MIN_SHARE
+
     @staticmethod
     def _plain_text(text: str) -> str:
         """Lowercase text without markup, accents or ligatures."""
