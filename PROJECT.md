@@ -145,6 +145,26 @@ lookup, else Crossref search
   title starting "Data from:"/"Data for:"): with DataCite in the loop, a dataset DOI in a
   page-1 data-availability note resolves, and Dryad titles datasets after the paper. Raised by a
   side review; not seen in the 400-PDF sample. Embedded DOIs are still trusted unchecked.
+- 2026-11-26: Theses and working papers (step 3.8). User's choices: a thesis no registry has
+  gets a record read from its title page, offered in interactive mode only (last, at 0.00,
+  no DOI) and confirmed before writing like a typed DOI (raised by a side review: it is
+  checked against nothing and may lack an author); journal = "<degree>, <university>" with
+  degree "PhD dissertation" / "Master's thesis" ("Doctoral dissertation" for other doctorates,
+  "Thesis" when unstated); OpenAlex is a separate step (3.9). `PDFProcessor._thesis_info`
+  needs a degree statement ("partial fulfillment", "requirements for the degree", "thesis
+  submitted/presented"), not a mention. PhD beats earlier degrees listed on the page; the
+  university nearest after "submitted to"/"faculty of"/"graduate school"/"requirements for the
+  degree" wins, a university over a college inside it, never an earlier degree's
+  ("B.A., X College"); leading "The" dropped. Author only from a "by" line (else a trusted
+  filename author); year = copyright year, else the last year on the page. Thesis PDFs also
+  search DataCite (`resource-type-id=dissertation`, plain words: the query is Elasticsearch
+  syntax), scored by the Crossref scorer on a Crossref-shaped item (`_datacite_item`); a
+  DataCite failure leaves Crossref's results. Any `dissertation`-type record gets the journal
+  label (`cli.thesis_journal`), using the page's university over the registry's publisher
+  (often "<University> Library"). DataCite name-only creators "Family, Given." are flipped.
+  Working papers: `ssrn.com/abstract=N` -> `10.2139/ssrn.N`; "Working Paper N" on a page that
+  says NBER -> `10.3386/wN`. Both go after the page's DOIs (a published paper may cite its
+  working-paper version), checked like page DOIs. SSRN registered DOIs for only some IDs.
 
 ## Roadmap
 
@@ -220,7 +240,21 @@ lookup, else Crossref search
       unchanged, 32/7/30 right, 0 wrong. Known gaps: a filename arXiv ID may be cut by the
       3-lookup cap on a page with 3+ DOIs; old-style arXiv filenames (`hep-th9901001.pdf`)
       are not read; the record title is written without its Crossref subtitle (as for search).
-   8. Dissertations, theses, and working papers -- using IDs or canonical URLs when available.  
+   8. ~~Dissertations, theses, and working papers.~~ (done 2026-11-26) Survey of the 181 sample
+      PDFs without a DOI: thesis title pages carry no ID, handle or URL (0 of 9 by a strict
+      test), but all name a university and a year; 1 SSRN ID, no NBER numbers. So the title
+      page, not IDs, is the source. Results: 13 PDFs read as theses (1 is a 24-page article
+      that mentions a dissertation; it has a DOI, which decides first). Degree and university
+      right on all 13 after fixes (by eye); author from a "by" line on 8 (5 empty); year on
+      13. Registries: no batch-acceptable record in Crossref or DataCite for any of them, so
+      batch still skips them all; interactive now offers the title-page record. The SSRN ID
+      has no Crossref DOI (404), so that file searches as before. Known gaps: no "by" line ->
+      no author unless the filename is `Author - Year - Title`; a title guessed from line order
+      (2 of 13) is often wrong, and the user sees it at confirmation; a record without author
+      renames to `_Unknown - Year - Title.pdf`; non-English title pages are not recognized.
+   9. OpenAlex as a second search source (agreed 2026-11-26 as its own step). It indexes
+      repository theses and working papers; would help the ~180 no-DOI files in the sample, not
+      only theses. Search currently assumes Crossref; needs a provider seam.
 4. UX
    - `--dry-run`; skip already-processed files (`--force` to override)
    - side-by-side current vs new metadata; `--undo LOG`

@@ -7,7 +7,9 @@ or batch processing modes.
 """
 
 import argparse
+import dataclasses
 import logging
+import re
 import os
 import sys
 from pathlib import Path
@@ -31,7 +33,7 @@ from papertag.core import (
     FilenameHints
 )
 from papertag.core.crossref_client import BATCH_THRESHOLD, batch_choice
-from papertag.core.pdf_processor import arxiv_doi
+from papertag.core.pdf_processor import ThesisInfo, arxiv_doi
 from papertag.ui import InteractiveUI, UserQuitError
 from papertag.utils import SessionLogger
 
@@ -144,6 +146,70 @@ def lookup_isbn(client: CrossrefClient, pdf_metadata: PDFMetadata,
             return match
         log.info("No record of ISBN %s has the page's title; searching instead", isbn)
     return None
+
+
+def thesis_journal(match: CrossrefMatch, thesis: Optional[ThesisInfo]) -> CrossrefMatch:
+    """Give a dissertation record "<degree>, <institution>" as its journal.
+
+    Registries file the institution, or its library, as the publisher; the
+    title page names the degree and the university itself.
+
+    Args:
+        match: A candidate record.
+        thesis: What the PDF's title page says, if it is a thesis.
+
+    Returns:
+        `match` unchanged unless it is a dissertation record; else a copy with
+        the label, using the page's institution when it names one.
+    """
+    if match.work_type != 'dissertation':
+        return match
+    degree = thesis.degree if thesis else "Dissertation"
+    institution = (thesis.institution if thesis else None) or match.journal
+    journal = f"{degree}, {institution}" if institution else degree
+    return dataclasses.replace(match, journal=journal)
+
+
+SMALL_TITLE_WORDS = {'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of',
+                     'on', 'or', 'the', 'to', 'with'}
+
+
+def _title_case(title: str) -> str:
+    """"GLACIAL VALLEYS OF THE HIGHLANDS" -> "Glacial Valleys of the Highlands"."""
+    words = title.title().split(' ')
+    return ' '.join(w.lower() if i and w.lower() in SMALL_TITLE_WORDS else w
+                    for i, w in enumerate(words))
+
+
+def title_page_record(pdf_metadata: PDFMetadata,
+                      filename_hints: FilenameHints) -> Optional[CrossrefMatch]:
+    """A record read off a thesis title page, for when no registry has it.
+
+    Never checked against anything, so it is offered at score 0.0 and only
+    in interactive mode, where the user sees it before choosing it.
+
+    Args:
+        pdf_metadata: What was extracted; its `thesis` must be set.
+        filename_hints: A well-formed filename's author fills a missing "by" line.
+
+    Returns:
+        The record (no DOI, type dissertation), or None without a title.
+    """
+    thesis = pdf_metadata.thesis
+    # The title search would use: a line-order guess loses to a good filename.
+    title = search_query(pdf_metadata, filename_hints).title
+    if not thesis or not title:
+        return None
+    title = re.sub(r'\s+', ' ', title).strip()
+    if title.isupper():
+        title = _title_case(title)
+    author = thesis.author
+    if not author and filename_hints.confidence >= FILENAME_TRUSTED:
+        author = filename_hints.author
+    journal = f"{thesis.degree}, {thesis.institution}" if thesis.institution else thesis.degree
+    return CrossrefMatch(doi='', title=title, authors=[author] if author else [],
+                         year=thesis.year or pdf_metadata.year, journal=journal, score=0.0,
+                         work_type='dissertation')
 
 
 class SearchQuery(NamedTuple):
@@ -330,9 +396,16 @@ class PDFMetadataManager:
                 matches = [doi_match]
             else:
                 matches = self._search(query)
+                if pdf_metadata.thesis:
+                    matches = self._add_datacite_theses(matches, query)
                 # Last, at 0.00: never auto-accepted, but there to pick.
                 found = {m.doi.lower() for m in matches}
                 matches += [m for m in rejected if m.doi.lower() not in found]
+                if not self.batch_mode:
+                    record = title_page_record(pdf_metadata, filename_hints)
+                    if record:
+                        matches.append(record)
+            matches = [thesis_journal(m, pdf_metadata.thesis) for m in matches]
 
             if not matches and self.batch_mode:
                 if not self.ui.quiet:
@@ -368,7 +441,10 @@ class PDFMetadataManager:
                 )
 
                 # A CrossrefMatch here means the user chose a numbered option.
-                selected_directly = isinstance(selected_match, CrossrefMatch)
+                # A title-page record (no DOI) was checked against nothing and
+                # may lack an author, so it is confirmed like a typed DOI.
+                selected_directly = (isinstance(selected_match, CrossrefMatch)
+                                     and bool(selected_match.doi))
 
                 # Handle special return values from display_matches
                 if selected_match is None:
@@ -436,7 +512,7 @@ class PDFMetadataManager:
             self.logger.log_success(
                 original_path=pdf_path,
                 new_path=new_path,
-                doi=selected_match.doi,
+                doi=selected_match.doi or None,
                 confidence=selected_match.score,
                 used_ocr=pdf_metadata.used_ocr
             )
@@ -508,6 +584,23 @@ class PDFMetadataManager:
             max_results=5, author_reliable=query.author_reliable,
             prefer_preprint=query.preprint)
 
+    def _add_datacite_theses(self, matches: List[CrossrefMatch],
+                             query: SearchQuery) -> List[CrossrefMatch]:
+        """Merge DataCite's dissertation matches into Crossref's, best first.
+
+        DataCite is a second source here: if it fails, Crossref's results stand.
+        """
+        try:
+            theses = self.crossref_client.search_datacite_theses(
+                title=query.title, author=query.author, year=query.year)
+        except (CrossrefConnectionError, CrossrefAPIError) as e:
+            log.warning("DataCite dissertation search failed: %s", e)
+            return matches
+        found = {m.doi.lower() for m in matches}
+        merged = matches + [m for m in theses if m.doi.lower() not in found]
+        # Stable: on equal scores Crossref's own order (rank_key) stands.
+        return sorted(merged, key=lambda m: m.score, reverse=True)[:5]
+
     def _match_to_metadata_update(self, match: CrossrefMatch) -> MetadataUpdate:
         """Convert CrossrefMatch to MetadataUpdate."""
         return MetadataUpdate(
@@ -515,7 +608,7 @@ class PDFMetadataManager:
             authors='; '.join(match.authors) if match.authors else '',
             year=match.year,
             journal=match.journal,
-            doi=match.doi,
+            doi=match.doi or None,   # a title-page record has none
             isbn=match.isbn
         )
 

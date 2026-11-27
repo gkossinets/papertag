@@ -795,7 +795,7 @@ class CrossrefClient:
                 no record
         """
         url = f"https://api.datacite.org/dois/{doi}"
-        data = self._make_request(url, headers={'User-Agent': f'papertag/{__version__}'})
+        data = self._make_request(url, headers=self.DATACITE_HEADERS)
         attributes = (data.get('data') or {}).get('attributes')
         if not attributes:
             raise CrossrefAPIError(f"DataCite returned no record for DOI {doi}")
@@ -808,15 +808,21 @@ class CrossrefClient:
 
     def _datacite_match(self, attributes: Dict[str, Any]) -> CrossrefMatch:
         """Convert a DataCite record's attributes to a CrossrefMatch (score 1.0)."""
+        item = self._datacite_item(attributes)
+        return CrossrefMatch(
+            doi=item['DOI'],
+            title=item['title'][0] if item['title'] else '',
+            authors=self._extract_authors(item),
+            year=self._extract_year(item),
+            journal=(item['container-title'] or [None])[0],
+            score=1.0,
+            work_type=item['type'],
+        )
+
+    def _datacite_item(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        """A DataCite record in Crossref's shape, so scoring reads both alike."""
         titles = attributes.get('titles') or []
         main = [t for t in titles if not t.get('titleType')] or titles
-        authors = []
-        for creator in attributes.get('creators') or []:
-            given, family = creator.get('givenName'), creator.get('familyName')
-            if given and family:
-                authors.append(f"{given} {family}")
-            elif family or creator.get('name'):
-                authors.append(family or creator['name'])
         # Newer API versions can send the publisher as an object.
         publisher = attributes.get('publisher')
         if isinstance(publisher, dict):
@@ -824,16 +830,76 @@ class CrossrefClient:
         container = (attributes.get('container') or {}).get('title')
         year = attributes.get('publicationYear')
         resource_type = (attributes.get('types') or {}).get('resourceTypeGeneral')
-        return CrossrefMatch(
-            doi=attributes.get('doi') or '',
-            title=main[0].get('title', '') if main else '',
-            authors=authors,
-            year=str(year) if year else None,
-            journal=container or publisher or None,
-            score=1.0,
-            work_type=self.DATACITE_TYPES.get(resource_type,
-                                              resource_type.lower() if resource_type else None),
-        )
+        return {
+            'DOI': attributes.get('doi') or '',
+            'title': [main[0].get('title', '')] if main else [],
+            'author': [a for a in map(self._datacite_author, attributes.get('creators') or []) if a],
+            'issued': {'date-parts': [[year]]} if year else {},
+            'container-title': [container or publisher] if (container or publisher) else [],
+            'type': self.DATACITE_TYPES.get(resource_type,
+                                            resource_type.lower() if resource_type else None),
+        }
+
+    @staticmethod
+    def _datacite_author(creator: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """A DataCite creator as a Crossref author ({given, family}), or None.
+
+        Some records give only `name`, as "Family, Given" and sometimes with a
+        stray final period ("Moreno, Ada.").
+        """
+        given, family = creator.get('givenName'), creator.get('familyName')
+        if family:
+            return {'given': given, 'family': family} if given else {'family': family}
+        name = (creator.get('name') or '').strip()
+        if not name:
+            return None
+        name = re.sub(r'([^\W\d_]{2,})\.$', r'\1', name)
+        parts = [part.strip() for part in name.split(',')]
+        if creator.get('nameType') != 'Organizational' and len(parts) == 2 and all(parts):
+            return {'given': parts[1], 'family': parts[0]}
+        return {'family': name}
+
+    DATACITE_HEADERS = {'User-Agent': f'papertag/{__version__}'}
+
+    def search_datacite_theses(self, title: Optional[str], author: Optional[str],
+                               year: Optional[str], max_results: int = 5) -> List[CrossrefMatch]:
+        """Search DataCite's dissertations, scored like Crossref search results.
+
+        Many university repositories register their theses with DataCite,
+        not Crossref. Sent without the email (see fetch_datacite).
+
+        Args:
+            title: Title to search for; without one, nothing is searched.
+            author: Author text, used for scoring only.
+            year: Year, used for scoring only.
+            max_results: Maximum number of results to return.
+
+        Returns:
+            Matches sorted by score, highest first.
+
+        Raises:
+            CrossrefConnectionError: After all retries exhausted
+            CrossrefAPIError: For non-retryable API errors
+        """
+        if not title:
+            return []
+        # Plain words: the query is Elasticsearch query syntax, where a colon
+        # or quote in a title would change its meaning.
+        words = " ".join(re.findall(r'[^\W_]+', title))
+        params = {"query": words, "resource-type-id": "dissertation",
+                  "page[size]": max_results * 2}
+        data = self._make_request(f"https://api.datacite.org/dois?{urlencode(params)}",
+                                  headers=self.DATACITE_HEADERS)
+        ranked = []
+        for record in data.get('data') or []:
+            item = self._datacite_item(record.get('attributes') or {})
+            if not item['DOI'] or not item['title']:
+                continue
+            match = self._datacite_match(record['attributes'])
+            match.score = self._calculate_match_score(item, title, author, year)
+            ranked.append(match)
+        ranked.sort(key=lambda m: m.score, reverse=True)
+        return ranked[:max_results]
 
     # Crossref types for a whole book, which loses a tie to a chapter.
     BOOK_TYPES = {"book", "monograph", "edited-book", "reference-book", "book-set"}

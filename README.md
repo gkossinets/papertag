@@ -49,9 +49,15 @@ For each PDF:
    record comes from [DataCite](https://datacite.org/), where arXiv registers
    its DOIs; so do DOIs Crossref doesn't have (Zenodo, many repositories). A
    book or chapter with an ISBN on page 1 or in its metadata gets the record of
-   that book (or chapter) whose title is the page's. Otherwise it searches Crossref with the title stored in the PDF,
+   that book (or chapter) whose title is the page's. SSRN and NBER working-paper
+   numbers on page 1 are looked up as DOIs too. Otherwise it searches Crossref with the title stored in the PDF,
    or one guessed from the page text, plus the authors, and scores up to five
-   candidates. Metadata written by an earlier papertag run is not trusted, so
+   candidates. A thesis title page ("submitted in partial fulfillment of the
+   requirements for the degree of ...") also searches DataCite's dissertations;
+   a dissertation record's journal is written as "PhD dissertation, University
+   of X" (or "Master's thesis, ..."). If no registry has the thesis,
+   interactive mode offers a record read from the title page itself, last, at
+   0.00 and with a confirmation step. Metadata written by an earlier papertag run is not trusted, so
    re-running can correct a wrong earlier match.
 4. **Selection.** You pick a candidate (interactive mode), or the top one is
    accepted automatically if it scores high enough (batch mode).
@@ -285,7 +291,10 @@ Exit status:
   400-PDF sample this did not happen, but nothing prevents it. A page whose
   text layer is badly damaged can fail the paper's own record; papertag then
   searches, and interactive mode lists the record last at 0.00.
-- Only Crossref is searched; DataCite is used for DOI lookups only. Papers
+- A record read from a thesis title page is never applied in batch mode; its
+  author comes only from a "by" line (or a well-formed filename), so check it
+  before confirming.
+- Only Crossref is searched, plus DataCite for theses. Papers
   with no Crossref record and no DOI or arXiv ID (many books, most theses and
   working papers) need `--from-filename` or a manual DOI. An ISBN helps only
   when Crossref lists it for the book: an ISBN printed on a chapter's first

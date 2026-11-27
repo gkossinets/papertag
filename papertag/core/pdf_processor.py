@@ -49,6 +49,20 @@ class OCRNotAvailableError(PDFProcessingError):
 
 
 @dataclass
+class ThesisInfo:
+    """What a thesis title page says about it.
+
+    degree is the label written as the journal: "PhD dissertation",
+    "Doctoral dissertation" (other doctorates), "Master's thesis" or "Thesis".
+    The other fields are None when the page doesn't say.
+    """
+    degree: str
+    institution: Optional[str] = None
+    author: Optional[str] = None
+    year: Optional[str] = None
+
+
+@dataclass
 class PDFMetadata:
     """Metadata extracted from a PDF file."""
     title: Optional[str] = None
@@ -74,9 +88,13 @@ class PDFMetadata:
     # ISBN-13s from XMP (prism:isbn, pdfx:isbn) and page 1, in that order. A
     # chapter PDF carries its book's ISBN, so these name a book, not the file.
     isbn_candidates: List[str] = field(default_factory=list)
+    # Set when page 1 is a thesis title page.
+    thesis: Optional[ThesisInfo] = None
 
 
 ARXIV_DOI_PREFIX = "10.48550/arXiv."
+SSRN_DOI_PREFIX = "10.2139/ssrn."
+NBER_DOI_PREFIX = "10.3386/w"
 
 
 def arxiv_doi(arxiv_id: str) -> str:
@@ -260,6 +278,31 @@ class PDFProcessor:
     ISBN_PATTERN = re.compile(r'\bISBN(?:-1[03])?:?\s*((?:\d[-\s]?){9}[\dXx](?:[-\s]?\d){0,3})')
     XMP_ISBN_KEYS = ("}isbn",)   # prism:isbn (any version), pdfx:isbn
 
+    # Working-paper IDs with Crossref DOIs. SSRN registered DOIs for only some
+    # abstract IDs; a 404 just moves the lookup on. NBER numbers count only on
+    # a page that says NBER: other series number their papers too.
+    SSRN_ID = re.compile(r'ssrn\.com/abstract(?:_id)?=(\d{4,8})', re.IGNORECASE)
+    NBER_MARK = re.compile(r'\bNBER\b')
+    NBER_NUMBER = re.compile(r'(?i)\bworking paper (?:no\.?\s*)?(\d{4,5})\b')
+
+    # Thesis title pages state the degree they were submitted for.
+    THESIS_MARK = re.compile(
+        r'(?i)(?:dissertation|thesis)\b.{0,40}\b(?:submitted|presented)\b'
+        r'|partial fulfil|requirements for the (?:degree|award)')
+    PHD_DEGREE = re.compile(r'(?i)doctor of philosophy|\bph\.?\s?d\b')
+    OTHER_DOCTORATE = re.compile(r'(?i)\bdoctor of [a-z]+|\bdoctoral\b|\bdoctorate\b')
+    MASTERS_DEGREE = re.compile(r"(?i)\bmaster(?:'s|’s|s)?\b")
+    # "University of Northfield", "NORTHFIELD STATE UNIVERSITY", "Westbrook
+    # College", "Valley Institute of Technology". Words on one line only.
+    _CAP = r"[A-Z][\w'’.&-]*"
+    _OF = r"(?i: (?:of|at)(?: the)?)"
+    INSTITUTION = re.compile(
+        rf"\b(?:{_CAP} ){{0,4}}(?i:university|universit[éàäy]|college|institute)"
+        rf"(?:{_OF}(?: {_CAP})+)?\b")
+    SUBMITTED_TO = re.compile(
+        r'(?i)\b(?:submitted to|presented to|faculty of|graduate (?:school|division|college)'
+        r'(?: of [\w ]+?)?(?: of)?|requirements for the degree)')
+
     def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
         Initialize PDF processor.
@@ -336,14 +379,9 @@ class PDFProcessor:
         if font_title:
             metadata.title, metadata.title_source = font_title, "font size"
 
-        metadata.doi_candidates = self._extract_dois(text)
-        # The stamp says the PDF is the arXiv preprint, so its record comes
-        # before a published version's DOI printed on the page.
         metadata.arxiv_id = self._extract_arxiv_stamp(text)
-        if metadata.arxiv_id:
-            stamp_doi = arxiv_doi(metadata.arxiv_id)
-            metadata.doi_candidates = [stamp_doi] + [
-                d for d in metadata.doi_candidates if d.lower() != stamp_doi.lower()]
+        metadata.doi_candidates = self._page_dois(text)
+        metadata.thesis = self._thesis_info(text)
         if metadata.doi_candidates:
             metadata.doi, metadata.doi_source = metadata.doi_candidates[0], "text"
 
@@ -757,6 +795,112 @@ class PDFProcessor:
                 doi = self.DOI_SUPPLEMENT_SUFFIX.sub('', self._sanitize_doi(doi))
                 self._add_doi(dois, doi)
         return dois
+
+    def _page_dois(self, text: str) -> List[str]:
+        """Every DOI page 1 gives, best first, for lookup_doi to try.
+
+        The arXiv stamp's DOI comes first: it says the PDF is that preprint,
+        so it beats a published version's DOI printed on the page. Then the
+        page's own DOIs, then DOIs of working-paper IDs (SSRN, NBER), which
+        a published paper may mention as its earlier version.
+        """
+        dois: List[str] = []
+        arxiv_id = self._extract_arxiv_stamp(text)
+        if arxiv_id:
+            dois.append(arxiv_doi(arxiv_id))
+        dois += self._extract_dois(text)
+        dois += [f"{SSRN_DOI_PREFIX}{n}" for n in self.SSRN_ID.findall(text)]
+        if self.NBER_MARK.search(text):
+            dois += [f"{NBER_DOI_PREFIX}{n}" for n in self.NBER_NUMBER.findall(text)]
+        return self._unique_ignoring_case(dois)
+
+    @staticmethod
+    def _unique_ignoring_case(dois: List[str]) -> List[str]:
+        """`dois` without case-insensitive repeats, first occurrence kept."""
+        seen: Dict[str, str] = {}
+        for doi in dois:
+            seen.setdefault(doi.lower(), doi)
+        return list(seen.values())
+
+    def _thesis_info(self, text: str) -> Optional[ThesisInfo]:
+        """Read a thesis title page, or None if page 1 isn't one.
+
+        A title page says it was submitted for a degree ("in partial
+        fulfillment of the requirements for the degree of ..."); an article
+        that mentions a dissertation doesn't.
+
+        Args:
+            text: Page 1 text.
+
+        Returns:
+            Degree label, granting institution, author ("by" line only; a bare
+            name line is a guess) and year, each None when not found.
+        """
+        flat = re.sub(r'\s+', ' ', text)
+        if not self.THESIS_MARK.search(flat):
+            return None
+        return ThesisInfo(degree=self._thesis_degree(flat),
+                          institution=self._thesis_institution(text),
+                          author=self._thesis_author(text),
+                          year=self._thesis_year(text))
+
+    def _thesis_degree(self, flat: str) -> str:
+        """The degree label; a PhD wins over earlier degrees listed on the page."""
+        if self.PHD_DEGREE.search(flat):
+            return "PhD dissertation"
+        if self.OTHER_DOCTORATE.search(flat):
+            return "Doctoral dissertation"
+        if self.MASTERS_DEGREE.search(flat):
+            return "Master's thesis"
+        # In US usage a dissertation is doctoral; "thesis" alone says nothing.
+        if re.search(r'(?i)\bdissertation\b', flat):
+            return "Doctoral dissertation"
+        return "Thesis"
+
+    def _thesis_institution(self, text: str) -> Optional[str]:
+        """The granting institution: the one named nearest after "submitted
+        to"/"faculty of"/..., else the first on the page. Earlier degrees'
+        institutions ("B.A., Westbrook College, 2010") are listed too."""
+        names = [(m.start(), m.group(0)) for m in self.INSTITUTION.finditer(text)]
+        # A bare word ("University", "the College"), or an earlier degree's.
+        names = [(pos, name) for pos, name in names
+                 if re.search(rf"{self._OF}| ", name.strip())
+                 and not re.search(r'(?i)\b(?:B|M)\.?\s?(?:A|S|Sc|Phil)\.?,\s*$',
+                                   text[max(0, pos - 12):pos])]
+        # "the College of Arts and Sciences of Ohio University": the
+        # university grants the degree.
+        universities = [(pos, name) for pos, name in names if re.search(r'(?i)universit', name)]
+        names = universities or names
+        if not names:
+            return None
+        anchors = [m.end() for m in self.SUBMITTED_TO.finditer(text)]
+        after_anchor = [(pos - a, name) for pos, name in names for a in anchors if pos >= a]
+        name = min(after_anchor)[1] if after_anchor else names[0][1]
+        name = re.sub(r'\s+', ' ', name).strip(' ,')
+        if name.isupper():
+            name = ' '.join(w.lower() if w in ('OF', 'AT', 'THE') else w.title()
+                            for w in name.split(' '))
+        return re.sub(r'^[Tt]he ', '', name)
+
+    def _thesis_author(self, text: str) -> Optional[str]:
+        """The name on the title page's "by" line, or None."""
+        match = re.search(r'(?im)^\s*by\s*:?\s*\n\s*([^\n]+)', text) or \
+            re.search(r'(?im)^\s*by\s*:?\s+([A-Z][^\n]+)', text)
+        if not match:
+            return None
+        # "Ada Moreno, M.A." -> "Ada Moreno"
+        name = match.group(1).split(',')[0].strip()
+        if not re.search(r'[^\W\d_]{2,}', name) or len(name) > 60:
+            return None
+        return name.title() if name.isupper() else name
+
+    def _thesis_year(self, text: str) -> Optional[str]:
+        """The copyright year, else the last plausible year on the page."""
+        copyright_year = re.search(r'(?i)(?:copyright|©)[^\n\d]{0,20}((?:19|20)\d{2})\b', text)
+        if copyright_year:
+            return copyright_year.group(1)
+        years = re.findall(r'\b((?:19|20)\d{2})\b', text)
+        return years[-1] if years else None
 
     def _extract_arxiv_stamp(self, text: str) -> Optional[str]:
         """The arXiv ID (without version) in page 1's margin stamp, or None."""

@@ -101,7 +101,7 @@ class InteractiveUI:
                 print(f"   Year: {match.year}")
             if match.journal:
                 print(f"   Journal: {match.journal}")
-            print(f"   DOI: {match.doi}")
+            print(f"   DOI: {match.doi or '(none; read from the title page)'}")
             print()
 
         # Show filename-based metadata option if we have usable hints
