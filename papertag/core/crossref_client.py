@@ -287,6 +287,11 @@ class CrossrefClient:
     SUPPLEMENT_TITLE = re.compile(
         r'^\s*(?:supplement(?:al|ary)?|supporting)\s+(?:materials?|information|data|info)\b',
         re.IGNORECASE)
+    # A paper's data and code are often titled after it ("Data from: <title>"
+    # on Dryad), so their title words are on the page too. Their DOIs resolve
+    # in DataCite, and a data-availability note puts them on page 1.
+    NOT_A_PAPER_TYPES = {"dataset", "software", "component"}
+    DATA_TITLE = re.compile(r'^\s*data\s+(?:from|for)\s*:', re.IGNORECASE)
     # Some text layers drop the spaces between words ("GlacialValleysof..."),
     # and Chinese or Japanese titles have none. A title word this long also
     # counts if it is in the page text with all spaces removed.
@@ -303,11 +308,14 @@ class CrossrefClient:
             page_text: Text of page 1 (OCR text for a scanned page).
 
         Returns:
-            False for a supplement record, a record without title words to
+            False for a supplement, data or code record, a record without title words to
             check, or a title mostly missing from the page; True otherwise,
             including when the page has too little text to tell.
         """
-        if self.SUPPLEMENT_TITLE.match(self._plain_text(match.title or '')):
+        plain_title = self._plain_text(match.title or '')
+        if self.SUPPLEMENT_TITLE.match(plain_title) or self.DATA_TITLE.match(plain_title):
+            return False
+        if match.work_type in self.NOT_A_PAPER_TYPES:
             return False
         if len(page_text.strip()) < self.MIN_PAGE_TEXT:
             return True

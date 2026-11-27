@@ -141,6 +141,10 @@ lookup, else Crossref search
   takes the record whose title (or title: subtitle) has similarity >= 0.85 to the query title
   and is on the page; a chapter beats a book type on a tie. Score 1.0. User's choice: Crossref
   only for ISBNs, no Open Library (a chapter PDF would get the whole book's record).
+  `shown_on_page` also rejects data and code records (type dataset/software/component, or a
+  title starting "Data from:"/"Data for:"): with DataCite in the loop, a dataset DOI in a
+  page-1 data-availability note resolves, and Dryad titles datasets after the paper. Raised by a
+  side review; not seen in the 400-PDF sample. Embedded DOIs are still trusted unchecked.
 
 ## Roadmap
 

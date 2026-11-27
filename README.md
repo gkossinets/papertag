@@ -44,7 +44,7 @@ For each PDF:
    publisher downloads do), papertag looks it up directly. A DOI printed on
    page 1 is looked up too, but its record is used only if its title appears
    on the page: page 1 can also carry a cited paper's DOI or the DOI of the
-   supplementary material. An arXiv preprint is identified by the ID in its
+   supplementary material, or of the paper's data or code. An arXiv preprint is identified by the ID in its
    margin stamp, or by an arXiv-style filename (`2101.00001v2.pdf`), and its
    record comes from [DataCite](https://datacite.org/), where arXiv registers
    its DOIs; so do DOIs Crossref doesn't have (Zenodo, many repositories). A

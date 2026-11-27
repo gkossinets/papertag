@@ -369,3 +369,22 @@ def test_arxiv_records_typed_text_are_still_preprints(request, client):
                                           types={"resourceTypeGeneral": "Text"})}}
     request.return_value = _response(200, record)
     assert client.fetch_metadata("10.48550/arXiv.2101.00001").is_preprint
+
+
+# --- data and code records are not the paper -------------------------------------------
+
+@pytest.mark.parametrize("work_type", ["dataset", "software", "component"])
+def test_page_doi_of_a_data_record_is_not_the_paper(work_type):
+    """Repositories title a paper's data after it; DataCite resolves those DOIs."""
+    data = _record("Glacial valleys of the northern highlands", doi="10.5061/dryad.abc12",
+                   work_type=work_type)
+    meta = PDFMetadata(doi_candidates=["10.5061/dryad.abc12"], extracted_text=PAGE)
+    assert lookup_doi(_doi_client({"10.5061/dryad.abc12": data}), meta) is None
+
+
+def test_page_doi_titled_data_from_is_not_the_paper():
+    """Dryad's convention, whatever type the record claims."""
+    data = _record("Data from: Glacial valleys of the northern highlands",
+                   doi="10.5061/dryad.abc12", work_type=None)
+    meta = PDFMetadata(doi_candidates=["10.5061/dryad.abc12"], extracted_text=PAGE)
+    assert lookup_doi(_doi_client({"10.5061/dryad.abc12": data}), meta) is None
