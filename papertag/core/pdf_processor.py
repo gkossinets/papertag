@@ -471,6 +471,28 @@ class PDFProcessor:
         short_words = re.findall(r'\w+', shorter.casefold())
         return len(long_words) > len(short_words) and long_words[:len(short_words)] == short_words
 
+    @classmethod
+    def tagged_by_papertag(cls, pdf_path: str) -> bool:
+        """True if an earlier papertag run wrote this file's metadata.
+
+        Recognizes the DOI/ISBN layout papertag writes, so files it tagged
+        without an identifier (--from-filename, a title-page record) are
+        not recognized.
+
+        Args:
+            pdf_path: Path to the PDF.
+
+        Returns:
+            False also when the file can't be read; processing then reports it.
+        """
+        try:
+            with pikepdf.open(pdf_path) as pdf:
+                docinfo = {str(k): v for k, v in pdf.docinfo.items()}
+        except Exception as e:
+            log.debug("Could not read docinfo from %s: %s", pdf_path, e)
+            return False
+        return cls._written_by_papertag(docinfo)
+
     @staticmethod
     def _written_by_papertag(docinfo: dict) -> bool:
         """True if docinfo has the identifier layout MetadataUpdater writes.

@@ -273,6 +273,7 @@ class PDFMetadataManager:
         log_path: Optional[str] = None,
         from_filename: bool = False,
         threshold: float = BATCH_THRESHOLD,
+        force: bool = False,
     ):
         """
         Initialize the orchestrator.
@@ -290,8 +291,10 @@ class PDFMetadataManager:
             log_path: Path to write a JSON session log to (default: no log file)
             from_filename: Extract metadata from Zotero-style filename (skip Crossref)
             threshold: Minimum score for batch mode to apply a search result
+            force: Process files an earlier run already tagged
         """
         self.batch_mode = batch_mode
+        self.force = force
         self.threshold = threshold
         self.rename = rename
         self.from_filename = from_filename
@@ -319,6 +322,7 @@ class PDFMetadataManager:
             'keep_backup': keep_backup,
             'batch_mode': batch_mode,
             'threshold': threshold,
+            'force': force,
             'rename': rename,
             'retries': retries
         }
@@ -355,6 +359,17 @@ class PDFMetadataManager:
 
             log.debug("Filename hints: author=%s year=%s confidence=%.2f",
                       filename_hints.author, filename_hints.year, filename_hints.confidence)
+
+            # Re-running over a folder shouldn't redo (or re-ask about) files
+            # already done. --from-filename sets what the user asked for, and
+            # writes no identifier papertag could recognize anyway.
+            if (not self.force and not self.from_filename
+                    and PDFProcessor.tagged_by_papertag(pdf_path)):
+                reason = "Already processed by papertag (use --force to redo)"
+                if not self.ui.quiet:
+                    print(f"Skipped: {reason}")
+                self.logger.log_skip(pdf_path, reason)
+                return 'skipped'
 
             # Handle --from-filename mode: extract metadata from filename only
             if self.from_filename:
@@ -871,6 +886,12 @@ Environment Variables:
     )
 
     parser.add_argument(
+        '--force', '-f',
+        action='store_true',
+        help='Process files that papertag has already tagged (skipped by default)'
+    )
+
+    parser.add_argument(
         '--recursive', '-r',
         action='store_true',
         help='Search directories recursively'
@@ -1059,6 +1080,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_path=args.log,
         from_filename=args.from_filename,
         threshold=args.threshold,
+        force=args.force,
     )
 
     interrupted = manager.process_files(files)

@@ -115,6 +115,13 @@ Paths can be files, directories or glob patterns; quoted patterns such as
 `'papers/**/*.pdf'` are expanded by papertag itself. Each file is processed
 once, even if it matches more than one argument.
 
+Files that papertag has already tagged are skipped, so re-running over a
+folder only handles new files. Pass `--force` to process them again (for
+example, to fix a wrong pick). papertag recognizes its own work by the
+`DOI: ...` or `ISBN: ...` it writes into the Keywords field, so files tagged
+without a DOI or ISBN (`--from-filename`, a thesis title page) are processed
+again.
+
 ## Options
 
 | Option | Description |
@@ -122,6 +129,7 @@ once, even if it matches more than one argument.
 | `-e`, `--email EMAIL` | Email for Crossref's polite pool, optional (default: `$CROSSREF_EMAIL`) |
 | `-b`, `--batch` | Apply the best match without asking if it scores at least the threshold and clearly beats the runner-up; skip the file otherwise |
 | `-t`, `--threshold SCORE` | Minimum score for `--batch` to apply a search result (default: 0.80) |
+| `-f`, `--force` | Process files papertag has already tagged (skipped by default) |
 | `-r`, `--recursive` | Include PDFs in subdirectories |
 | `--no-rename` | Update metadata but keep the current filename |
 | `--from-filename` | Take metadata from an `Author - Year - Title.pdf` name; skip Crossref |
