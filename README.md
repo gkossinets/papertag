@@ -106,6 +106,7 @@ papertag ~/Downloads/                 # every PDF in a directory
 papertag papers/ --recursive          # ...and its subdirectories
 papertag *.pdf a/ b/ --batch          # any mix of files, directories and globs
 papertag papers/ --batch --backup     # unattended; keep a .bak of each original
+papertag papers/ --batch --dry-run    # show what would change; write nothing
 papertag paper.pdf --no-rename        # update metadata only, keep the filename
 papertag "Smith - 2020 - Title.pdf" --from-filename   # metadata from the filename, no Crossref
 papertag papers/ --batch --log run.json               # write a JSON log of every action
@@ -129,6 +130,7 @@ again.
 | `-e`, `--email EMAIL` | Email for Crossref's polite pool, optional (default: `$CROSSREF_EMAIL`) |
 | `-b`, `--batch` | Apply the best match without asking if it scores at least the threshold and clearly beats the runner-up; skip the file otherwise |
 | `-t`, `--threshold SCORE` | Minimum score for `--batch` to apply a search result (default: 0.80) |
+| `-n`, `--dry-run` | Show what would change (metadata and new filename) but write and rename nothing |
 | `-f`, `--force` | Process files papertag has already tagged (skipped by default) |
 | `-r`, `--recursive` | Include PDFs in subdirectories |
 | `--no-rename` | Update metadata but keep the current filename |
@@ -256,6 +258,18 @@ appended. Nothing is overwritten.
 
 ## Output, logs and exit status
 
+Before writing, papertag shows the file's current metadata and filename next
+to the new ones, with changed rows marked `*`:
+
+```
+            Current                                 New
+* Title     Microsoft Word - draft3.docx            Sediment Transport in Braided Rivers
+* Authors   amoreno                                 Ada Moreno
+  Year      2019                                    2019
+* Filename  scan0042.pdf                            Moreno - 2019 - Sediment Transport in
+                                                    Braided Rivers.pdf
+```
+
 Progress, candidates and prompts go to stdout. Errors and warnings go to
 stderr as `ERROR: ...` / `WARNING: ...`, so you can redirect them separately:
 
@@ -264,7 +278,7 @@ papertag papers/ --batch 2> problems.txt
 ```
 
 `--log PATH` writes a JSON record of the session: the settings used, and for
-each file its status (`success`, `skipped`, `failed`), the matched DOI and
+each file its status (`success`, `dry-run`, `skipped`, `failed`), the matched DOI and
 score, the new filename, the reason it was skipped, or the error.
 
 Exit status:

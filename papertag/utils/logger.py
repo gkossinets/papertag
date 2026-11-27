@@ -64,6 +64,33 @@ class SessionLogger:
         }
         self.results.append(result)
 
+    def log_planned(
+        self,
+        original_path: str,
+        new_path: str,
+        doi: Optional[str],
+        confidence: float,
+    ):
+        """
+        Log what a dry run would have done (nothing was written).
+
+        Args:
+            original_path: Original file path
+            new_path: Path the file would have been renamed to
+            doi: Matched DOI
+            confidence: Match confidence score (0.0-1.0)
+        """
+        self.results.append({
+            "original_path": original_path,
+            "status": "dry-run",
+            "matched_doi": doi,
+            "confidence": confidence,
+            "new_filename": Path(new_path).name,
+            "metadata_updated": False,
+            "renamed": False,
+            "timestamp": datetime.now().isoformat()
+        })
+
     def log_skip(
         self,
         original_path: str,
@@ -114,7 +141,7 @@ class SessionLogger:
         Returns:
             Dictionary with counts by status
         """
-        stats = {"success": 0, "skipped": 0, "failed": 0}
+        stats = {"success": 0, "dry-run": 0, "skipped": 0, "failed": 0}
         for result in self.results:
             status = result.get("status")
             if status in stats:
@@ -139,6 +166,7 @@ class SessionLogger:
                 "duration_seconds": (end_time - self.start_time).total_seconds(),
                 "total_files": len(self.results),
                 "successful": stats["success"],
+                "dry_run": stats["dry-run"],
                 "skipped": stats["skipped"],
                 "failed": stats["failed"],
                 "settings": self.settings

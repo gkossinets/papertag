@@ -4,7 +4,9 @@ This module provides user-friendly interactive prompts for match selection,
 error handling, and confirmations during PDF metadata processing.
 """
 
+import shutil
 import sys
+import textwrap
 from typing import List, Optional
 
 from ..core.crossref_client import CrossrefMatch
@@ -167,19 +169,73 @@ class InteractiveUI:
                 print("\nInterrupted, skipping...")
                 return None
 
+    def show_changes(
+        self,
+        current: MetadataUpdate,
+        new: MetadataUpdate,
+        filename: str,
+        new_filename: str,
+    ) -> None:
+        """Print current and new metadata side by side, changed rows marked "*".
+
+        Long values wrap within their column rather than being cut: the title
+        is what the user most needs to check.
+
+        Args:
+            current: What the PDF has now (as MetadataUpdater.read_metadata reads it).
+            new: What would be written.
+            filename: The file's current name.
+            new_filename: The name it would get.
+        """
+        if self.quiet:
+            return
+        rows = [("Title", current.title, new.title),
+                ("Authors", current.authors, new.authors),
+                ("Year", current.year, new.year),
+                ("Journal", current.journal, new.journal),
+                ("DOI", current.doi, new.doi)]
+        if current.isbn or new.isbn:
+            rows.append(("ISBN", current.isbn, new.isbn))
+        rows.append(("Filename", filename, new_filename))
+
+        label_width = 10
+        width = min(shutil.get_terminal_size((100, 24)).columns, self.MAX_TABLE_WIDTH)
+        column = max((width - 2 - label_width - 2) // 2, 10)
+
+        def cell(value: Optional[str]) -> List[str]:
+            return textwrap.wrap(str(value), column) if value else ["(none)"]
+
+        print()
+        print(f"  {'':<{label_width}}{'Current':<{column}}  New")
+        for label, old, updated in rows:
+            changed = (old or '') != (updated or '')
+            left, right = cell(old), cell(updated)
+            for i in range(max(len(left), len(right))):
+                marker = "* " if changed and i == 0 else "  "
+                name = label if i == 0 else ''
+                old_part = left[i] if i < len(left) else ''
+                new_part = right[i] if i < len(right) else ''
+                print(f"{marker}{name:<{label_width}}{old_part:<{column}}  {new_part}".rstrip())
+        print()
+
+    # Wider tables are hard to read across.
+    MAX_TABLE_WIDTH = 140
+
     def confirm_metadata(
         self,
         filename: str,
         metadata: MetadataUpdate,
-        new_filename: str
+        new_filename: str,
+        current: Optional[MetadataUpdate] = None,
     ) -> bool:
         """
-        Show metadata and confirm with user.
+        Show the change and confirm with user.
 
         Args:
             filename: Original filename
             metadata: Metadata to write
             new_filename: Proposed new filename
+            current: The PDF's metadata now (default: shown as empty)
 
         Returns:
             True if user approves, False if skip
@@ -191,28 +247,8 @@ class InteractiveUI:
             return True
 
         print("\nReview metadata update:")
-        print()
-        print(f"File: {filename}")
-        print()
-        print("Metadata to write:")
-        print("┌" + "─" * 70 + "┐")
-
-        # Format metadata nicely
-        self._print_boxed_line(f"Title:   {metadata.title}")
-        self._print_boxed_line(f"Authors: {metadata.authors}")
-        if metadata.year:
-            self._print_boxed_line(f"Year:    {metadata.year}")
-        if metadata.journal:
-            self._print_boxed_line(f"Journal: {metadata.journal}")
-        if metadata.doi:
-            self._print_boxed_line(f"DOI:     {metadata.doi}")
-        if metadata.isbn:
-            self._print_boxed_line(f"ISBN:    {metadata.isbn}")
-
-        print("└" + "─" * 70 + "┘")
-        print()
-        print(f"New filename: {new_filename}")
-        print()
+        self.show_changes(current or MetadataUpdate(title='', authors=''),
+                          metadata, filename, new_filename)
 
         # Get confirmation
         while True:
@@ -318,24 +354,29 @@ class InteractiveUI:
         completed: int,
         skipped: int,
         failed: int,
-        log_path: str
+        log_path: str,
+        dry_run: bool = False,
     ):
         """
         Print final summary.
 
         Args:
             total: Total files processed
-            completed: Number successfully completed
+            completed: Number successfully completed (with dry_run: would be)
             skipped: Number skipped
             failed: Number failed
             log_path: Path to log file
+            dry_run: Nothing was written; say so
         """
         print("\n" + "=" * 70)
-        print("PROCESSING SUMMARY")
+        print("PROCESSING SUMMARY (DRY RUN)" if dry_run else "PROCESSING SUMMARY")
         print("=" * 70)
         print()
         print(f"Total files:      {total}")
-        print(f"Completed:        {completed}")
+        if dry_run:
+            print(f"Would update:     {completed}")
+        else:
+            print(f"Completed:        {completed}")
         print(f"Skipped:          {skipped}")
         print(f"Failed:           {failed}")
         print()
@@ -349,18 +390,11 @@ class InteractiveUI:
             print(f"Log file:         {log_path}")
             print()
 
+        if dry_run:
+            print("Dry run: nothing was written or renamed.")
+            print()
+
         print("=" * 70)
-
-    def _print_boxed_line(self, text: str):
-        """Helper to print a line inside a box."""
-        # Truncate if too long
-        max_width = 68
-        if len(text) > max_width:
-            text = text[:max_width - 3] + "..."
-
-        # Pad to width
-        padded = text + " " * (max_width - len(text))
-        print(f"│ {padded} │")
 
     def info(self, message: str):
         """Print informational message."""

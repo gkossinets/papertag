@@ -274,6 +274,7 @@ class PDFMetadataManager:
         from_filename: bool = False,
         threshold: float = BATCH_THRESHOLD,
         force: bool = False,
+        dry_run: bool = False,
     ):
         """
         Initialize the orchestrator.
@@ -292,7 +293,9 @@ class PDFMetadataManager:
             from_filename: Extract metadata from Zotero-style filename (skip Crossref)
             threshold: Minimum score for batch mode to apply a search result
             force: Process files an earlier run already tagged
+            dry_run: Show and log what would change; write and rename nothing
         """
+        self.dry_run = dry_run
         self.batch_mode = batch_mode
         self.force = force
         self.threshold = threshold
@@ -323,6 +326,7 @@ class PDFMetadataManager:
             'batch_mode': batch_mode,
             'threshold': threshold,
             'force': force,
+            'dry_run': dry_run,
             'rename': rename,
             'retries': retries
         }
@@ -384,9 +388,11 @@ class PDFMetadataManager:
             log.debug("Extracted DOI=%s title=%s used_ocr=%s",
                       pdf_metadata.doi, pdf_metadata.title, pdf_metadata.used_ocr)
 
-            # Display current PDF docinfo metadata (same fields we will update)
-            if not self.ui.quiet:
-                current = self.metadata_updater.read_metadata(pdf_path)
+            # Read the fields papertag would overwrite, for the comparison
+            # table. Interactive mode also shows them before the candidates,
+            # which the user picks from.
+            current = self.metadata_updater.read_metadata(pdf_path)
+            if not self.ui.quiet and not self.batch_mode:
                 print("\nCurrent PDF metadata:")
                 print(f"  Title:   {current.title or '(none)'}")
                 print(f"  Authors: {current.authors or '(none)'}")
@@ -483,15 +489,7 @@ class PDFMetadataManager:
 
             # Step 5: Prepare metadata update
             metadata_update = self._match_to_metadata_update(selected_match)
-
-            # Generate new filename
-            if self.rename:
-                new_filename = self.metadata_updater.generate_zotero_filename(
-                    metadata_update,
-                    pdf_path
-                )
-            else:
-                new_filename = Path(pdf_path).name
+            new_filename = self._new_filename(metadata_update, pdf_path)
 
             # Step 6: Confirm (skip for a direct numbered pick; the user has
             # already seen the candidate's details in the list)
@@ -499,43 +497,22 @@ class PDFMetadataManager:
                 confirmed = self.ui.confirm_metadata(
                     Path(pdf_path).name,
                     metadata_update,
-                    new_filename
+                    new_filename,
+                    current=current,
                 )
 
                 if not confirmed:
                     self.logger.log_skip(pdf_path, "User declined metadata")
                     return 'skipped'
+            else:
+                self.ui.show_changes(current, metadata_update,
+                                     Path(pdf_path).name, new_filename)
 
-            # Step 7: Update PDF metadata
-            if not self.ui.quiet:
-                print("Updating PDF metadata...")
-
-            self.metadata_updater.update_metadata(pdf_path, metadata_update)
-
-            # Step 8: Rename file
-            new_path = pdf_path
-            if self.rename:
-                if not self.ui.quiet:
-                    print(f"Renaming to: {new_filename}")
-
-                new_path = self.metadata_updater.rename_file(
-                    pdf_path,
-                    new_filename
-                )
-
-            # Step 9: Log success
-            self.logger.log_success(
-                original_path=pdf_path,
-                new_path=new_path,
-                doi=selected_match.doi or None,
-                confidence=selected_match.score,
-                used_ocr=pdf_metadata.used_ocr
-            )
-
-            if not self.ui.quiet:
-                print("Done")
-
-            return 'completed'
+            # Steps 7-9: write, rename, log
+            return self._apply(pdf_path, metadata_update, new_filename,
+                               doi=selected_match.doi or None,
+                               confidence=selected_match.score,
+                               used_ocr=pdf_metadata.used_ocr)
 
         except UserQuitError:
             raise  # Propagate quit signal
@@ -627,6 +604,56 @@ class PDFMetadataManager:
             isbn=match.isbn
         )
 
+    def _new_filename(self, metadata_update: MetadataUpdate, pdf_path: str) -> str:
+        """The name the file would get: Zotero-style, or unchanged with --no-rename."""
+        if not self.rename:
+            return Path(pdf_path).name
+        return self.metadata_updater.generate_zotero_filename(metadata_update, pdf_path)
+
+    def _apply(self, pdf_path: str, metadata_update: MetadataUpdate, new_filename: str,
+               doi: Optional[str], confidence: float, used_ocr: bool) -> str:
+        """Write the metadata, rename the file and log it; with --dry-run, only log.
+
+        Args:
+            pdf_path: Absolute path of the PDF.
+            metadata_update: What to write.
+            new_filename: Name to rename to (the current name keeps it).
+            doi: The record's DOI, for the log.
+            confidence: The record's score, for the log.
+            used_ocr: Whether page 1 was read by OCR, for the log.
+
+        Returns:
+            'completed'.
+
+        Raises:
+            PDFUpdateError, FileOperationError: Writing or renaming failed.
+        """
+        new_path = str(Path(pdf_path).with_name(new_filename))
+        if self.dry_run:
+            if not self.ui.quiet:
+                if new_filename != Path(pdf_path).name:
+                    print(f"Would rename to: {new_filename}")
+                print("Dry run: nothing written")
+            self.logger.log_planned(original_path=pdf_path, new_path=new_path,
+                                    doi=doi, confidence=confidence)
+            return 'completed'
+
+        if not self.ui.quiet:
+            print("Updating PDF metadata...")
+        self.metadata_updater.update_metadata(pdf_path, metadata_update)
+
+        new_path = pdf_path
+        if self.rename:
+            if not self.ui.quiet:
+                print(f"Renaming to: {new_filename}")
+            new_path = self.metadata_updater.rename_file(pdf_path, new_filename)
+
+        self.logger.log_success(original_path=pdf_path, new_path=new_path, doi=doi,
+                                confidence=confidence, used_ocr=used_ocr)
+        if not self.ui.quiet:
+            print("Done")
+        return 'completed'
+
     def _process_from_filename(self, pdf_path: str, filename_hints: FilenameHints) -> str:
         """
         Process a PDF using metadata extracted from its filename.
@@ -671,77 +698,31 @@ class PDFMetadataManager:
             doi=None       # Not available from filename
         )
 
-        if not self.ui.quiet:
-            print(f"\nMetadata from filename:")
-            print(f"  Title:  {metadata_update.title or '(not found)'}")
-            print(f"  Author: {metadata_update.authors or '(not found)'}")
-            print(f"  Year:   {metadata_update.year or '(not found)'}")
+        current = self.metadata_updater.read_metadata(pdf_path)
+        new_filename = self._new_filename(metadata_update, pdf_path)
 
         # In interactive mode, confirm before applying
         if not self.batch_mode:
-            # Generate new filename if renaming is enabled
-            if self.rename:
-                new_filename = self.metadata_updater.generate_zotero_filename(
-                    metadata_update,
-                    pdf_path
-                )
-            else:
-                new_filename = Path(pdf_path).name
-
             confirmed = self.ui.confirm_metadata(
                 Path(pdf_path).name,
                 metadata_update,
-                new_filename
+                new_filename,
+                current=current,
             )
 
             if not confirmed:
                 self.logger.log_skip(pdf_path, "User declined metadata")
                 return 'skipped'
-
-        # Update PDF metadata
-        if not self.ui.quiet:
-            print("Updating PDF metadata...")
+        else:
+            self.ui.show_changes(current, metadata_update, Path(pdf_path).name, new_filename)
 
         try:
-            self.metadata_updater.update_metadata(pdf_path, metadata_update)
-        except (PDFUpdateError, FileOperationError) as e:
-            log.error("%s: could not update metadata: %s", Path(pdf_path).name, e)
+            return self._apply(pdf_path, metadata_update, new_filename, doi=None,
+                               confidence=filename_hints.confidence, used_ocr=False)
+        except (PDFUpdateError, FileOperationError, FileNotFoundError) as e:
+            log.error("%s: could not update: %s", Path(pdf_path).name, e)
             self.logger.log_failure(pdf_path, str(e))
             return 'failed'
-
-        # Rename file if enabled
-        new_path = pdf_path
-        if self.rename:
-            new_filename = self.metadata_updater.generate_zotero_filename(
-                metadata_update,
-                pdf_path
-            )
-            if not self.ui.quiet:
-                print(f"Renaming to: {new_filename}")
-
-            try:
-                new_path = self.metadata_updater.rename_file(
-                    pdf_path,
-                    new_filename
-                )
-            except (FileOperationError, FileNotFoundError) as e:
-                log.error("%s: could not rename: %s", Path(pdf_path).name, e)
-                self.logger.log_failure(pdf_path, str(e))
-                return 'failed'
-
-        # Log success
-        self.logger.log_success(
-            original_path=pdf_path,
-            new_path=new_path,
-            doi=None,  # No DOI in from-filename mode
-            confidence=filename_hints.confidence,
-            used_ocr=False
-        )
-
-        if not self.ui.quiet:
-            print("Done")
-
-        return 'completed'
 
     def process_files(self, files: List[str]) -> bool:
         """
@@ -787,7 +768,8 @@ class PDFMetadataManager:
                     completed=self.stats['completed'],
                     skipped=self.stats['skipped'],
                     failed=self.stats['failed'],
-                    log_path=self.logger.log_path
+                    log_path=self.logger.log_path,
+                    dry_run=self.dry_run,
                 )
 
         return interrupted
@@ -883,6 +865,12 @@ Environment Variables:
         default=BATCH_THRESHOLD,
         metavar='SCORE',
         help=f'Minimum score for --batch to apply a search result (default: {BATCH_THRESHOLD:.2f})'
+    )
+
+    parser.add_argument(
+        '--dry-run', '-n',
+        action='store_true',
+        help='Show what would change; write and rename nothing'
     )
 
     parser.add_argument(
@@ -1081,6 +1069,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         from_filename=args.from_filename,
         threshold=args.threshold,
         force=args.force,
+        dry_run=args.dry_run,
     )
 
     interrupted = manager.process_files(files)
