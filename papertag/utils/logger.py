@@ -39,7 +39,9 @@ class SessionLogger:
         new_path: str,
         doi: str,
         confidence: float,
-        used_ocr: bool = False
+        used_ocr: bool = False,
+        previous: Optional[Dict[str, Any]] = None,
+        written: Optional[Dict[str, str]] = None,
     ):
         """
         Log successful processing.
@@ -50,6 +52,9 @@ class SessionLogger:
             doi: Matched DOI
             confidence: Match confidence score (0.0-1.0)
             used_ocr: Whether OCR was used for text extraction
+            previous: MetadataUpdater.snapshot() from before the write, for --undo
+            written: Title and authors as written, so --undo can tell whether
+                the file was changed since
         """
         result = {
             "original_path": original_path,
@@ -57,11 +62,16 @@ class SessionLogger:
             "matched_doi": doi,
             "confidence": confidence,
             "new_filename": Path(new_path).name,
+            "new_path": new_path,
             "metadata_updated": True,
             "renamed": original_path != new_path,
             "used_ocr": used_ocr,
             "timestamp": datetime.now().isoformat()
         }
+        if previous is not None:
+            result["previous"] = previous
+        if written is not None:
+            result["written"] = written
         self.results.append(result)
 
     def log_planned(

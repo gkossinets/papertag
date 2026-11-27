@@ -110,6 +110,7 @@ papertag papers/ --batch --dry-run    # show what would change; write nothing
 papertag paper.pdf --no-rename        # update metadata only, keep the filename
 papertag "Smith - 2020 - Title.pdf" --from-filename   # metadata from the filename, no Crossref
 papertag papers/ --batch --log run.json               # write a JSON log of every action
+papertag --undo run.json                              # put back what that run changed
 ```
 
 Paths can be files, directories or glob patterns; quoted patterns such as
@@ -139,7 +140,8 @@ again.
 | `--no-ocr` | Never OCR, even for scanned PDFs |
 | `--ocr-pages N` | Number of pages to OCR (default: 1) |
 | `--retries N` | Attempts per Crossref request, with exponential backoff (default: 3) |
-| `--log PATH` | Write a JSON log of the session to `PATH` |
+| `--log PATH` | Write a JSON log of the session to `PATH` (needed for `--undo`) |
+| `--undo LOG` | Restore the metadata and filenames that the run logged in `LOG` changed |
 | `-v`, `--verbose` | Show debug detail: filename hints, extracted DOI/title/authors, PDF parser warnings, tracebacks |
 | `-q`, `--quiet` | Show only errors and the final summary |
 | `-V`, `--version` | Print the version and exit |
@@ -279,7 +281,16 @@ papertag papers/ --batch 2> problems.txt
 
 `--log PATH` writes a JSON record of the session: the settings used, and for
 each file its status (`success`, `dry-run`, `skipped`, `failed`), the matched DOI and
-score, the new filename, the reason it was skipped, or the error.
+score, the new filename, the reason it was skipped, or the error. For each
+file it changed, the log also keeps the file's previous metadata (the whole
+document info dictionary and XMP packet), so a log can be a few KB per file.
+
+`papertag --undo run.json` uses that to put files back: it restores the old
+metadata and the old filename, last file first, keeping timestamps. A file is
+left as is, and reported on stderr, if it is no longer where the run put it,
+if its title or authors have changed since the run, or if another file now
+has its old name. Undo needs a run made with `--log`; without a log, `--backup`
+is the way back.
 
 Exit status:
 

@@ -5,12 +5,13 @@ This module provides functionality to update PDF metadata and rename files
 in Zotero format while preserving file timestamps.
 """
 
+import base64
 import logging
 import os
 import re
 import shutil
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import pikepdf
 
@@ -127,6 +128,85 @@ class MetadataUpdater:
             doi=doi,
             isbn=isbn
         )
+
+    def snapshot(self, pdf_path: str) -> Dict[str, Any]:
+        """Record what update_metadata replaces, so restore() can put it back.
+
+        update_metadata rebuilds the whole docinfo dictionary and edits the
+        XMP packet, so both are kept whole. JSON-safe: it goes into the log.
+
+        Args:
+            pdf_path: PDF about to be updated.
+
+        Returns:
+            ``{"docinfo": {key: text}, "xmp": packet text or None}``; an XMP
+            packet that isn't UTF-8 (UTF-16 is allowed) is kept as
+            ``"xmp_base64"`` instead, since the JSON log is UTF-8. Docinfo
+            values that aren't text (rare; the spec allows only text and
+            dates, which are text) are left out.
+
+        Raises:
+            PDFUpdateError: The file can't be read.
+        """
+        try:
+            with pikepdf.open(pdf_path) as pdf:
+                docinfo = {str(k): str(v) for k, v in pdf.docinfo.items()
+                           if isinstance(v, pikepdf.String)}
+                stream = pdf.Root.get('/Metadata')
+                packet = stream.read_bytes() if isinstance(stream, pikepdf.Stream) else None
+        except Exception as e:
+            raise PDFUpdateError(f"Could not read metadata to save for undo: {e}") from e
+        if packet is None:
+            return {"docinfo": docinfo, "xmp": None}
+        try:
+            return {"docinfo": docinfo, "xmp": packet.decode('utf-8')}
+        except UnicodeDecodeError:
+            return {"docinfo": docinfo, "xmp": None,
+                    "xmp_base64": base64.b64encode(packet).decode('ascii')}
+
+    def restore(self, pdf_path: str, snapshot: Dict[str, Any]) -> None:
+        """Put back the docinfo and XMP that snapshot() recorded.
+
+        Timestamps are preserved, as for update_metadata.
+
+        Args:
+            pdf_path: The PDF to restore.
+            snapshot: What snapshot() returned before the update.
+
+        Raises:
+            PDFUpdateError: Reading or writing failed; the file is unchanged.
+        """
+        timestamps = get_timestamps(pdf_path)
+        temp_output = pdf_path + ".tmp"
+        try:
+            with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+                docinfo = pikepdf.Dictionary()
+                for key, value in snapshot["docinfo"].items():
+                    docinfo[key] = pikepdf.String(value)
+                pdf.docinfo = pdf.make_indirect(docinfo)
+                if snapshot.get("xmp_base64"):
+                    packet = base64.b64decode(snapshot["xmp_base64"])
+                elif snapshot.get("xmp") is not None:
+                    packet = snapshot["xmp"].encode('utf-8')
+                else:
+                    packet = None
+                if packet is None:
+                    if '/Metadata' in pdf.Root:
+                        del pdf.Root.Metadata
+                else:
+                    stream = pdf.make_stream(packet)
+                    stream.Type = pikepdf.Name.Metadata
+                    stream.Subtype = pikepdf.Name.XML
+                    pdf.Root.Metadata = pdf.make_indirect(stream)
+                # By default pikepdf rewrites the XMP's PDF version on save,
+                # re-serializing the packet; undo should put back its bytes.
+                pdf.save(temp_output, fix_metadata_version=False)
+            os.replace(temp_output, pdf_path)
+        except Exception as e:
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+            raise PDFUpdateError(f"Could not restore metadata: {e}") from e
+        set_timestamps(pdf_path, timestamps)
 
     def update_metadata(
         self,

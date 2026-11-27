@@ -10,15 +10,17 @@ papertag/
   core/crossref_client.py Crossref search, DOI lookup (DataCite fallback), ISBN lookup, scoring
   core/metadata_updater.py write docinfo + XMP (pikepdf), Zotero-style filenames, rename
   ui/interactive.py       prompts: match selection, confirmation, error handling
+  undo.py                 --undo LOG: restore metadata/filenames from a session log
   utils/logger.py         opt-in JSON session log (--log)
   utils/timestamp_utils.py preserve mtime/atime (+ macOS creation time via SetFile)
 tests/                    pytest; run `python -m pytest` (PAPERTAG_NETWORK_TESTS=1 for live Crossref)
   pdf_fixtures.py         builds real one-page text PDFs with pikepdf
 ```
 
-Per-file flow: filename hints -> extract text/DOI/arXiv ID/ISBN -> DOI lookup, else ISBN
-lookup, else Crossref search
--> pick match (batch: top score >= 0.80; interactive: user) -> write metadata -> rename.
+Per-file flow: skip if already tagged (unless --force) -> filename hints -> extract
+text/DOI/arXiv ID/ISBN -> DOI lookup, else ISBN lookup, else Crossref search
+-> pick match (batch: `batch_choice`; interactive: user) -> show current vs new
+-> `PDFMetadataManager._apply`: write metadata, rename, log (with --dry-run: log only).
 
 ## Decisions
 
@@ -166,6 +168,23 @@ lookup, else Crossref search
   says NBER -> `10.3386/wN`. Both go after the page's DOIs (a published paper may cite its
   working-paper version), checked like page DOIs. SSRN registered DOIs for only some IDs.
 
+- 2026-11-26: UX (step 4). Progress is one plain line per file, never redrawn: the old
+  cursor-up redraw erased the last 9 lines of the next file's output (it ran after each file,
+  with that file's output in between), not only on non-TTYs. The stderr log handler flushes
+  stdout first. The Crossref email is optional (public pool, no mailto in the User-Agent).
+  Files tagged by an earlier run are skipped (`PDFProcessor.tagged_by_papertag`, the
+  step 3.1 signature check); `--force`/`-f` redoes them. Files tagged without a DOI/ISBN
+  (`--from-filename`, title-page records) carry no signature and are processed again; no
+  marker field was added. `--from-filename` never skips. One current-vs-new table
+  (`InteractiveUI.show_changes`, changed rows `*`, long values wrap) at every decision point:
+  confirmation, numbered/batch pick, --from-filename. Interactive mode still lists current
+  metadata before the candidates. `--dry-run`/`-n` stops in `_apply`, logs status `dry-run`.
+  `--undo LOG` (my calls, not reviewed by the user): the log keeps a `MetadataUpdater.snapshot`
+  (whole docinfo, raw XMP; base64 if not UTF-8) and the title/authors as written; undo goes
+  last entry first, restores with `fix_metadata_version=False` (pikepdf's default re-serializes
+  the XMP), renames back, and refuses a file that moved, changed since, or whose old name is
+  taken. Logs stay opt-in, so undo needs `--log`. Non-text docinfo values are not kept.
+
 ## Roadmap
 
 1. ~~Foundation: rename, pyproject, green tests, remove dead code.~~ (done 2026-11-26)
@@ -259,11 +278,11 @@ lookup, else Crossref search
       $1 per 1,000 calls; a free `api_key` gives $1/day), so call it only when Crossref didn't
       settle a file; many of its added records have no DOI, which raises whether batch may
       ever apply one (proposed: interactive only, like the title-page record).
-4. UX
-   - `--dry-run`; skip already-processed files (`--force` to override)
-   - side-by-side current vs new metadata; `--undo LOG`
-   - make the Crossref email optional
-   - progress display emits cursor-up escape codes (`\x1b[F\x1b[K`) even when stdout is not a
-     TTY; only redraw when `sys.stdout.isatty()`
-   - batch with an unreadable PDF prints the error on stderr before that file's stdout header when
-     piped (stdout is block-buffered); consider flushing stdout before logging errors
+4. ~~UX: `--dry-run`; skip already-processed files (`--force`); side-by-side current vs new
+   metadata; `--undo LOG`; optional Crossref email; progress without escape codes; flush stdout
+   before diagnostics.~~ (done 2026-11-26) Known gaps: `python -m papertag.cli` logs under
+   `__main__`, outside the `papertag` logger, so its messages lack the `ERROR:` prefix (the
+   installed command is fine); undo of a file whose restore succeeded but rename-back failed
+   leaves the old metadata under the new name.
+5. Possible extensions: OpenAlex search (step 3.9 notes); a papertag marker so DOI-less
+   tagged files are recognized as processed.

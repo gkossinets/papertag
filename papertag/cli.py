@@ -35,6 +35,7 @@ from papertag.core import (
 from papertag.core.crossref_client import BATCH_THRESHOLD, batch_choice
 from papertag.core.pdf_processor import ThesisInfo, arxiv_doi
 from papertag.ui import InteractiveUI, UserQuitError
+from papertag.undo import UndoLogError, undo_log
 from papertag.utils import SessionLogger
 
 log = logging.getLogger(__name__)
@@ -638,6 +639,9 @@ class PDFMetadataManager:
                                     doi=doi, confidence=confidence)
             return 'completed'
 
+        # --undo needs what is about to be replaced; only a log keeps it.
+        previous = self.metadata_updater.snapshot(pdf_path) if self.logger.enabled else None
+
         if not self.ui.quiet:
             print("Updating PDF metadata...")
         self.metadata_updater.update_metadata(pdf_path, metadata_update)
@@ -648,8 +652,14 @@ class PDFMetadataManager:
                 print(f"Renaming to: {new_filename}")
             new_path = self.metadata_updater.rename_file(pdf_path, new_filename)
 
+        written = None
+        if previous is not None:
+            # As read back, so --undo compares like with like.
+            now = self.metadata_updater.read_metadata(new_path)
+            written = {"title": now.title, "authors": now.authors}
         self.logger.log_success(original_path=pdf_path, new_path=new_path, doi=doi,
-                                confidence=confidence, used_ocr=used_ocr)
+                                confidence=confidence, used_ocr=used_ocr,
+                                previous=previous, written=written)
         if not self.ui.quiet:
             print("Done")
         return 'completed'
@@ -827,6 +837,7 @@ Examples:
   %(prog)s *.pdf --no-rename --email "me@example.com"
   %(prog)s "Smith - 2020 - Title.pdf" --from-filename
   %(prog)s papers/ --from-filename --batch
+  %(prog)s papers/ --batch --log run.json && %(prog)s --undo run.json
 
 Environment Variables:
   CROSSREF_EMAIL    Email for Crossref's faster polite pool (optional; or use --email)
@@ -835,9 +846,15 @@ Environment Variables:
 
     parser.add_argument(
         'inputs',
-        nargs='+',
+        nargs='*',
         metavar='PATH',
         help='PDF files, directories, or glob patterns to process'
+    )
+
+    parser.add_argument(
+        '--undo',
+        metavar='LOG',
+        help='Restore the metadata and filenames a run logged with --log changed'
     )
 
     parser.add_argument(
@@ -943,7 +960,10 @@ Environment Variables:
         help='Minimal output (errors and summary only)'
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.inputs and not args.undo:
+        parser.error("the following arguments are required: PATH")
+    return args
 
 
 def validate_config(args: argparse.Namespace) -> Tuple[bool, Optional[str]]:
@@ -1033,6 +1053,34 @@ EXIT_FAILURE = 1
 EXIT_INTERRUPTED = 130
 
 
+def run_undo(log_path: str, quiet: bool = False) -> int:
+    """Undo the run logged at `log_path` and report each file.
+
+    Args:
+        log_path: A session log written with --log.
+        quiet: Print only failures (to stderr) and no summary.
+
+    Returns:
+        Process exit code: failure if the log is unreadable or any file was
+        left as is.
+    """
+    try:
+        results = undo_log(log_path, MetadataUpdater())
+    except UndoLogError as e:
+        log.error("%s", e)
+        return EXIT_FAILURE
+    for result in results:
+        if result.restored:
+            if not quiet:
+                print(result.message)
+        else:
+            log.error("%s", result.message)
+    restored = sum(r.restored for r in results)
+    if not quiet:
+        print(f"\nUndo: {restored} restored, {len(results) - restored} left as is")
+    return EXIT_OK if restored == len(results) else EXIT_FAILURE
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Main entry point.
 
@@ -1044,6 +1092,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     args = parse_arguments(argv)
     configure_logging(verbose=args.verbose, quiet=args.quiet)
+
+    if args.undo:
+        if args.inputs:
+            print("Error: --undo takes a log, not PDF paths", file=sys.stderr)
+            return EXIT_FAILURE
+        return run_undo(args.undo, quiet=args.quiet)
 
     valid, error_msg = validate_config(args)
     if not valid:
