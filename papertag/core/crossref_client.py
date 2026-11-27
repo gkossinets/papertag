@@ -29,8 +29,14 @@ class CrossrefConnectionError(Exception):
 
 
 class CrossrefAPIError(Exception):
-    """Raised for non-retryable API errors (e.g., 404, malformed requests)."""
-    pass
+    """Raised for non-retryable API errors (e.g., 404, malformed requests).
+
+    Also raised for DataCite, papertag's second DOI registry.
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass
@@ -164,13 +170,15 @@ class CrossrefClient:
         except (TypeError, ValueError):
             return None
 
-    def _make_request(self, url: str, method: str = 'GET') -> Dict[str, Any]:
+    def _make_request(self, url: str, method: str = 'GET',
+                      headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Make HTTP request with retry logic and exponential backoff.
 
         Args:
             url: The URL to request
             method: HTTP method (default: GET)
+            headers: Headers to send instead of the Crossref ones
 
         Returns:
             Response JSON as dictionary
@@ -188,7 +196,7 @@ class CrossrefClient:
                 response = requests.request(
                     method,
                     url,
-                    headers=self.headers,
+                    headers=headers or self.headers,
                     timeout=self.timeout
                 )
 
@@ -211,7 +219,8 @@ class CrossrefClient:
                 elif 400 <= response.status_code < 500:
                     # Client error - don't retry
                     raise CrossrefAPIError(
-                        f"API error {response.status_code}: {response.text}"
+                        f"API error {response.status_code}: {response.text}",
+                        status_code=response.status_code,
                     )
                 elif response.status_code >= 500:
                     # Server error - retry
@@ -475,12 +484,7 @@ class CrossrefClient:
 
         similarity = 0.0
         if title:
-            candidates = [t for t in (item.get('title') or []) if t]
-            subtitle = next((s for s in (item.get('subtitle') or []) if s), None)
-            if candidates and subtitle:
-                candidates.append(f"{candidates[0]}: {subtitle}")
-            similarity = max((self._fuzzy_title_similarity(title, c) for c in candidates),
-                             default=0.0)
+            similarity = self._item_title_similarity(title, item)
             earned += self.TITLE_WEIGHT * similarity
             possible += self.TITLE_WEIGHT
 
@@ -502,6 +506,18 @@ class CrossrefClient:
         elif similarity < self.MIN_TITLE_FOR_HIGH:
             score = min(score, self.WEAK_TITLE_CAP)
         return min(score, 1.0)
+
+    def _item_title_similarity(self, title: str, item: Dict[str, Any]) -> float:
+        """Similarity of `title` to a record's title, with or without its subtitle.
+
+        Crossref files many subtitles apart from the title; a page or
+        filename title may have it or not.
+        """
+        candidates = [t for t in (item.get('title') or []) if t]
+        subtitle = next((s for s in (item.get('subtitle') or []) if s), None)
+        if candidates and subtitle:
+            candidates.append(f"{candidates[0]}: {subtitle}")
+        return max((self._fuzzy_title_similarity(title, c) for c in candidates), default=0.0)
 
     def _extract_year(self, item: Dict[str, Any]) -> Optional[str]:
         """Extract publication year from Crossref item."""
@@ -689,9 +705,23 @@ class CrossrefClient:
         ranked.sort(key=lambda entry: entry[0], reverse=True)
         return [match for _, match in ranked[:max_results]]
 
+    # Prefixes registered only with DataCite; asking Crossref first would be
+    # a wasted request. arXiv registers one for every paper.
+    DATACITE_PREFIXES = ("10.48550/",)
+    # DataCite resourceTypeGeneral -> Crossref `type`, so is_preprint and the
+    # article/preprint rules work the same for both registries.
+    DATACITE_TYPES = {
+        "Preprint": "posted-content", "JournalArticle": "journal-article",
+        "Dissertation": "dissertation", "Book": "book", "BookChapter": "book-chapter",
+        "Report": "report", "Dataset": "dataset",
+    }
+
     def fetch_metadata(self, doi: str) -> CrossrefMatch:
         """
         Fetch complete metadata for a given DOI.
+
+        DOIs Crossref doesn't know (404) are looked up in DataCite, which
+        registers arXiv's, Zenodo's and many repositories' DOIs.
 
         Args:
             doi: The DOI to look up (bare or as a doi.org URL)
@@ -702,8 +732,8 @@ class CrossrefClient:
 
         Raises:
             CrossrefConnectionError: After all retries exhausted
-            CrossrefAPIError: For non-retryable API errors (404, etc.) or a
-                response without a 'message' record
+            CrossrefAPIError: For non-retryable API errors (404 from both
+                registries, etc.) or a response without a record
         """
         cleaned_doi = doi.strip()
         if cleaned_doi.startswith('http'):
@@ -711,7 +741,15 @@ class CrossrefClient:
             if doi_match:
                 cleaned_doi = doi_match.group(1)
 
-        data = self._make_request(f"https://api.crossref.org/works/{cleaned_doi}")
+        if cleaned_doi.lower().startswith(self.DATACITE_PREFIXES):
+            return self.fetch_datacite(cleaned_doi)
+        try:
+            data = self._make_request(f"https://api.crossref.org/works/{cleaned_doi}")
+        except CrossrefAPIError as e:
+            if e.status_code != 404:
+                raise
+            log.debug("DOI %s is not in Crossref; trying DataCite", cleaned_doi)
+            return self.fetch_datacite(cleaned_doi)
 
         item = data.get('message')
         if not item:
@@ -731,3 +769,117 @@ class CrossrefClient:
             isbn=isbn,
             work_type=item.get('type'),
         )
+
+    def fetch_datacite(self, doi: str) -> CrossrefMatch:
+        """Fetch a DOI's record from DataCite.
+
+        Sent without the email: that is for Crossref's polite pool.
+
+        Args:
+            doi: A bare DOI.
+
+        Returns:
+            CrossrefMatch with score 1.0.
+
+        Raises:
+            CrossrefConnectionError: After all retries exhausted
+            CrossrefAPIError: DataCite doesn't have the DOI either, or sent
+                no record
+        """
+        url = f"https://api.datacite.org/dois/{doi}"
+        data = self._make_request(url, headers={'User-Agent': f'papertag/{__version__}'})
+        attributes = (data.get('data') or {}).get('attributes')
+        if not attributes:
+            raise CrossrefAPIError(f"DataCite returned no record for DOI {doi}")
+        match = self._datacite_match(attributes)
+        match.doi = match.doi or doi
+        # Some arXiv records say "Text", but every arXiv DOI is a preprint.
+        if doi.lower().startswith("10.48550/arxiv."):
+            match.work_type = "posted-content"
+        return match
+
+    def _datacite_match(self, attributes: Dict[str, Any]) -> CrossrefMatch:
+        """Convert a DataCite record's attributes to a CrossrefMatch (score 1.0)."""
+        titles = attributes.get('titles') or []
+        main = [t for t in titles if not t.get('titleType')] or titles
+        authors = []
+        for creator in attributes.get('creators') or []:
+            given, family = creator.get('givenName'), creator.get('familyName')
+            if given and family:
+                authors.append(f"{given} {family}")
+            elif family or creator.get('name'):
+                authors.append(family or creator['name'])
+        # Newer API versions can send the publisher as an object.
+        publisher = attributes.get('publisher')
+        if isinstance(publisher, dict):
+            publisher = publisher.get('name')
+        container = (attributes.get('container') or {}).get('title')
+        year = attributes.get('publicationYear')
+        resource_type = (attributes.get('types') or {}).get('resourceTypeGeneral')
+        return CrossrefMatch(
+            doi=attributes.get('doi') or '',
+            title=main[0].get('title', '') if main else '',
+            authors=authors,
+            year=str(year) if year else None,
+            journal=container or publisher or None,
+            score=1.0,
+            work_type=self.DATACITE_TYPES.get(resource_type,
+                                              resource_type.lower() if resource_type else None),
+        )
+
+    # Crossref types for a whole book, which loses a tie to a chapter.
+    BOOK_TYPES = {"book", "monograph", "edited-book", "reference-book", "book-set"}
+
+    # Records one book's ISBN can return: the book and its chapters, ranked
+    # by the page title. Large edited volumes have dozens of chapters.
+    ISBN_ROWS = 20
+
+    @classmethod
+    def isbn_url(cls, isbn: str, title: str, rows: int = ISBN_ROWS) -> str:
+        """Crossref request for a book's records, ranked by `title`."""
+        params = {"filter": f"isbn:{isbn}", "query.bibliographic": title,
+                  "rows": rows, "select": cls.SEARCH_SELECT + ",ISBN"}
+        return f"https://api.crossref.org/works?{urlencode(params)}"
+
+    def isbn_record(self, isbn: str, title: Optional[str],
+                    page_text: str) -> Optional[CrossrefMatch]:
+        """The record, among one book's, that is the PDF: the book or a chapter.
+
+        A chapter PDF carries its book's ISBN, so the ISBN alone can't say
+        which record the file is. The one whose title is the page's title
+        (similarity >= MIN_TITLE_FOR_HIGH, and on the page) is; among equals
+        a chapter beats the book, whose title a chapter page often shows too.
+
+        Args:
+            isbn: ISBN-13 found in the PDF.
+            title: The page's title; without one there is nothing to choose by.
+            page_text: Text of page 1.
+
+        Returns:
+            The record with score 1.0 and `isbn` set, or None.
+
+        Raises:
+            CrossrefConnectionError: After all retries exhausted
+            CrossrefAPIError: For non-retryable API errors
+        """
+        if not title:
+            return None
+        data = self._make_request(self.isbn_url(isbn, title))
+        best, best_key = None, None
+        for item in (data.get('message') or {}).get('items') or []:
+            if not item.get('DOI') or not item.get('title'):
+                continue
+            similarity = self._item_title_similarity(title, item)
+            if similarity < self.MIN_TITLE_FOR_HIGH:
+                continue
+            match = CrossrefMatch(
+                doi=item['DOI'], title=item['title'][0], authors=self._extract_authors(item),
+                year=self._extract_year(item),
+                journal=(item.get('container-title') or [None])[0],
+                score=1.0, isbn=isbn, work_type=item.get('type'))
+            if not self.shown_on_page(match, page_text):
+                continue
+            key = (similarity, item.get('type') not in self.BOOK_TYPES)
+            if best_key is None or key > best_key:
+                best, best_key = match, key
+        return best

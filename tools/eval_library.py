@@ -57,13 +57,14 @@ class CachingClient(CrossrefClient):
         self.last_items: List[Dict[str, Any]] = []
         self.requests_sent = 0
 
-    def _make_request(self, url: str, method: str = "GET") -> Dict[str, Any]:
+    def _make_request(self, url: str, method: str = "GET",
+                      headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         cached = self.cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()}.json" \
             if self.cache_dir else None
         if cached and cached.exists():
             data = json.loads(cached.read_text())
         else:
-            data = super()._make_request(url, method)
+            data = super()._make_request(url, method, headers)
             self.requests_sent += 1
             if cached:
                 cached.parent.mkdir(parents=True, exist_ok=True)

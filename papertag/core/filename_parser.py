@@ -22,11 +22,20 @@ class FilenameHints:
         title: Article title hint
         confidence: Confidence score from 0.0 to 1.0 indicating how well
                    the filename matched a known pattern
+        arxiv_id: arXiv identifier without version, for a file saved under
+                  its arXiv name ("2101.00001v2.pdf")
     """
     author: Optional[str] = None
     year: Optional[str] = None
     title: Optional[str] = None
     confidence: float = 0.0
+    arxiv_id: Optional[str] = None
+
+
+# arXiv's own download name: YYMM.NNNN(N), optional version, optionally
+# prefixed "arXiv". The month check keeps "2019.12345" out.
+ARXIV_FILENAME = re.compile(r'^(?:arxiv[-_ .:]?)?(\d{2}(?:0[1-9]|1[0-2])\.\d{4,5})(?:v\d+)?$',
+                            re.IGNORECASE)
 
 
 def parse_filename(filename: str) -> FilenameHints:
@@ -57,6 +66,12 @@ def parse_filename(filename: str) -> FilenameHints:
     clean_name = filename
     if clean_name.lower().endswith('.pdf'):
         clean_name = clean_name[:-4]
+
+    # The name is an identifier, not author/year/title; "2004.12345" would
+    # otherwise give the year hint 2004.
+    arxiv = ARXIV_FILENAME.match(clean_name.strip())
+    if arxiv:
+        return FilenameHints(arxiv_id=arxiv.group(1))
 
     # Define patterns in order of confidence (most specific first)
     # Each pattern is (regex, confidence_score, (author_group, year_group, title_group))

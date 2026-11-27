@@ -31,6 +31,7 @@ from papertag.core import (
     FilenameHints
 )
 from papertag.core.crossref_client import BATCH_THRESHOLD, batch_choice
+from papertag.core.pdf_processor import arxiv_doi
 from papertag.ui import InteractiveUI, UserQuitError
 from papertag.utils import SessionLogger
 
@@ -47,13 +48,15 @@ MAX_PAGE_DOI_LOOKUPS = 3
 
 
 def lookup_doi(client: CrossrefClient, pdf_metadata: PDFMetadata,
-               rejected: Optional[List[CrossrefMatch]] = None) -> Optional[CrossrefMatch]:
+               rejected: Optional[List[CrossrefMatch]] = None,
+               filename_hints: Optional[FilenameHints] = None) -> Optional[CrossrefMatch]:
     """Fetch the record for the PDF's own DOI, or None to search instead.
 
     An embedded DOI (put there by the publisher) is trusted. DOIs read from
     page 1 are tried best first, and a record counts only if its title is on
     the page (CrossrefClient.shown_on_page): the first DOI on a page can be a
-    cited work's or the supplement's.
+    cited work's or the supplement's. An arXiv filename's DOI is tried last,
+    with the same check.
 
     Args:
         client: Crossref client.
@@ -61,6 +64,8 @@ def lookup_doi(client: CrossrefClient, pdf_metadata: PDFMetadata,
         rejected: If given, records that failed the page check are appended
             with score 0.0. A damaged text layer can fail the paper's own
             record, so interactive mode still offers them.
+        filename_hints: What the filename says; its arXiv ID, if any, is
+            looked up after the page's DOIs.
 
     Returns:
         The record, with score 1.0, or None. Crossref errors are logged, not
@@ -79,7 +84,16 @@ def lookup_doi(client: CrossrefClient, pdf_metadata: PDFMetadata,
     page_dois = list(pdf_metadata.doi_candidates)
     if not page_dois and pdf_metadata.doi and not embedded:
         page_dois = [pdf_metadata.doi]
+    if filename_hints and filename_hints.arxiv_id:
+        # After the page's DOIs: the page says what the PDF is, the filename
+        # only what it was saved as (a published version may keep the name).
+        page_dois.append(arxiv_doi(filename_hints.arxiv_id))
     page_dois = [d for d in page_dois if not embedded or d.lower() != embedded.lower()]
+    unique: List[str] = []
+    for doi in page_dois:
+        if doi.lower() not in {d.lower() for d in unique}:
+            unique.append(doi)
+    page_dois = unique
     for doi in page_dois[:MAX_PAGE_DOI_LOOKUPS]:
         try:
             match = client.fetch_metadata(doi)
@@ -98,6 +112,37 @@ def lookup_doi(client: CrossrefClient, pdf_metadata: PDFMetadata,
             rejected.append(match)
     if len(page_dois) > MAX_PAGE_DOI_LOOKUPS:
         log.info("Tried %d of %d DOIs on page 1", MAX_PAGE_DOI_LOOKUPS, len(page_dois))
+    return None
+
+
+def lookup_isbn(client: CrossrefClient, pdf_metadata: PDFMetadata,
+                title: Optional[str] = None) -> Optional[CrossrefMatch]:
+    """Find the record of a PDF that carries an ISBN, or None to search instead.
+
+    Tried when no DOI resolved. The ISBN is the book's, so the record is the
+    one of that book's whose title is the page's (CrossrefClient.isbn_record).
+
+    Args:
+        client: Crossref client.
+        pdf_metadata: What was extracted from the PDF.
+        title: Title to choose by; defaults to the page's.
+
+    Returns:
+        The record, with score 1.0, or None. Crossref errors are logged, not
+        raised: the caller then searches, which reports a network failure.
+    """
+    title = title or pdf_metadata.title
+    if not title:
+        return None
+    for isbn in pdf_metadata.isbn_candidates:
+        try:
+            match = client.isbn_record(isbn, title, pdf_metadata.extracted_text)
+        except (CrossrefConnectionError, CrossrefAPIError) as e:
+            log.warning("Lookup of ISBN %s failed: %s", isbn, e)
+            return None
+        if match:
+            return match
+        log.info("No record of ISBN %s has the page's title; searching instead", isbn)
     return None
 
 
@@ -278,7 +323,9 @@ class PDFMetadataManager:
             query = search_query(pdf_metadata, filename_hints)
 
             rejected: List[CrossrefMatch] = []
-            doi_match = lookup_doi(self.crossref_client, pdf_metadata, rejected=rejected)
+            doi_match = (lookup_doi(self.crossref_client, pdf_metadata, rejected=rejected,
+                                    filename_hints=filename_hints)
+                         or lookup_isbn(self.crossref_client, pdf_metadata, title=query.title))
             if doi_match:
                 matches = [doi_match]
             else:

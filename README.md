@@ -44,7 +44,12 @@ For each PDF:
    publisher downloads do), papertag looks it up directly. A DOI printed on
    page 1 is looked up too, but its record is used only if its title appears
    on the page: page 1 can also carry a cited paper's DOI or the DOI of the
-   supplementary material. Otherwise it searches Crossref with the title stored in the PDF,
+   supplementary material. An arXiv preprint is identified by the ID in its
+   margin stamp, or by an arXiv-style filename (`2101.00001v2.pdf`), and its
+   record comes from [DataCite](https://datacite.org/), where arXiv registers
+   its DOIs; so do DOIs Crossref doesn't have (Zenodo, many repositories). A
+   book or chapter with an ISBN on page 1 or in its metadata gets the record of
+   that book (or chapter) whose title is the page's. Otherwise it searches Crossref with the title stored in the PDF,
    or one guessed from the page text, plus the authors, and scores up to five
    candidates. Metadata written by an earlier papertag run is not trusted, so
    re-running can correct a wrong earlier match.
@@ -167,7 +172,13 @@ Crossref finds nothing, you can still enter a DOI or use the filename.
   appears on the page. Up to three page-1 DOIs are tried, best first: labeled
   ones (`doi: ...`), then `doi.org` links, then bare ones. A DOI split across
   two lines after a hyphen is rejoined, and a supplementary-material suffix
-  (`.supp`, `/-/DCSupplemental`) is dropped.
+  (`.supp`, `/-/DCSupplemental`) is dropped. The arXiv ID from the page's
+  margin stamp comes first; an arXiv ID from the filename comes after the
+  page's DOIs, since a published version may keep the arXiv name.
+- With no DOI, an ISBN is looked up: of the records Crossref has for that
+  book (the book and its chapters), the one whose title matches the page's
+  title (similarity >= 0.85) and appears on the page is applied (score 1.00).
+  A chapter beats the book when both match.
 - Otherwise the best search result is applied only if it scores at least the
   threshold (0.80, or `--threshold`) and leads the next candidate by at least
   0.05. Two near-equal candidates mean papertag can't tell which paper the file
@@ -274,8 +285,13 @@ Exit status:
   400-PDF sample this did not happen, but nothing prevents it. A page whose
   text layer is badly damaged can fail the paper's own record; papertag then
   searches, and interactive mode lists the record last at 0.00.
-- Only Crossref is searched. Papers with no Crossref record (most arXiv-only
-  preprints, many books, theses) need `--from-filename` or a manual DOI.
+- Only Crossref is searched; DataCite is used for DOI lookups only. Papers
+  with no Crossref record and no DOI or arXiv ID (many books, most theses and
+  working papers) need `--from-filename` or a manual DOI. An ISBN helps only
+  when Crossref lists it for the book: an ISBN printed on a chapter's first
+  page is not always one Crossref has, and then search decides as before.
+- An arXiv PDF gets the arXiv record even when the paper has since been
+  published, because that is the version the file is.
 
 Improvements to these are planned; see the roadmap in
 [PROJECT.md](PROJECT.md).
@@ -295,7 +311,7 @@ papertag/
   cli.py                    command-line entry point and per-file workflow
   core/filename_parser.py   search hints from existing filenames
   core/pdf_processor.py     page-1 text, OCR fallback, DOI and title detection
-  core/crossref_client.py   Crossref search and DOI lookup, retries, scoring
+  core/crossref_client.py   Crossref search, DOI lookup (Crossref, then DataCite), ISBN lookup, retries, scoring
   core/metadata_updater.py  writes metadata, builds filenames, renames
   ui/interactive.py         prompts and progress display
   utils/                    JSON session log, timestamp preservation

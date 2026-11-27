@@ -127,3 +127,24 @@ def test_doi_lookup_writes_isbn():
     written = mgr.metadata_updater.update_metadata.call_args[0][1]
     assert written.isbn == "9783030000000"
     assert written.doi == "10.1007/b1"
+
+
+def test_isbn_record_is_used_when_no_doi_resolves():
+    """A chapter PDF with only its book's ISBN gets the chapter's record, no search."""
+    mgr = _manager_with_mocks()
+    mgr.batch_mode = True
+    mgr.pdf_processor.extract_metadata.return_value = _extracted(
+        title="Glacial Valleys of the Northern Highlands", title_source="font size",
+        isbn_candidates=["9781555550127"])
+    chapter = CrossrefMatch(
+        doi="10.1234/book.ch3", title="Glacial valleys of the northern highlands",
+        authors=["Ada Moreno"], year="2019", journal="Highland Studies", score=1.0,
+        isbn="9781555550127", work_type="book-chapter")
+    mgr.crossref_client.isbn_record.return_value = chapter
+
+    result = mgr.process_single_pdf(PDF_PATH)
+
+    assert result == "completed"
+    mgr.crossref_client.search.assert_not_called()
+    written = mgr.metadata_updater.update_metadata.call_args[0][1]
+    assert (written.doi, written.isbn) == ("10.1234/book.ch3", "9781555550127")

@@ -11,7 +11,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import pikepdf
 from pypdf import PdfReader
@@ -69,6 +69,43 @@ class PDFMetadata:
     # Page 1 carries a preprint server's stamp; on a score tie the preprint
     # record then beats the published article.
     preprint: bool = False
+    # arXiv ID (no version) from page 1's margin stamp: the PDF is that preprint.
+    arxiv_id: Optional[str] = None
+    # ISBN-13s from XMP (prism:isbn, pdfx:isbn) and page 1, in that order. A
+    # chapter PDF carries its book's ISBN, so these name a book, not the file.
+    isbn_candidates: List[str] = field(default_factory=list)
+
+
+ARXIV_DOI_PREFIX = "10.48550/arXiv."
+
+
+def arxiv_doi(arxiv_id: str) -> str:
+    """The DataCite DOI arXiv registered for `arxiv_id` (no version)."""
+    return f"{ARXIV_DOI_PREFIX}{arxiv_id}"
+
+
+def isbn13(text: str) -> Optional[str]:
+    """Normalize an ISBN-10 or ISBN-13 to 13 digits, or None if invalid.
+
+    Args:
+        text: The ISBN, with or without hyphens and spaces.
+
+    Returns:
+        The ISBN-13, or None when the length or check digit is wrong.
+    """
+    digits = re.sub(r'[-\s]', '', text).upper()
+    if re.fullmatch(r'\d{9}[\dX]', digits):
+        total = sum((10 - i) * (10 if c == 'X' else int(c)) for i, c in enumerate(digits))
+        if total % 11:
+            return None
+        digits = '978' + digits[:9]
+        check = (10 - sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(digits)) % 10) % 10
+        return digits + str(check)
+    if re.fullmatch(r'97[89]\d{10}', digits):
+        if sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(digits)) % 10:
+            return None
+        return digits
+    return None
 
 
 @dataclass
@@ -213,6 +250,16 @@ class PDFProcessor:
         r'10\.21203/rs\.',                                  # Research Square DOI
     ]
 
+    # arXiv's margin stamp: the ID with its version, then the category in
+    # brackets. A citation ("arXiv preprint arXiv:2005.00002") has neither.
+    ARXIV_STAMP = re.compile(
+        r'arXiv:(\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})v\d+\s*\[[\w.-]+\]')
+
+    # Only labeled ISBNs: a bare 13-digit number may be an order or record
+    # number. Digits may be split by hyphens or spaces; ISBN-10 may end in X.
+    ISBN_PATTERN = re.compile(r'\bISBN(?:-1[03])?:?\s*((?:\d[-\s]?){9}[\dXx](?:[-\s]?\d){0,3})')
+    XMP_ISBN_KEYS = ("}isbn",)   # prism:isbn (any version), pdfx:isbn
+
     def __init__(self, use_ocr: bool = True, ocr_pages: int = 1):
         """
         Initialize PDF processor.
@@ -290,6 +337,13 @@ class PDFProcessor:
             metadata.title, metadata.title_source = font_title, "font size"
 
         metadata.doi_candidates = self._extract_dois(text)
+        # The stamp says the PDF is the arXiv preprint, so its record comes
+        # before a published version's DOI printed on the page.
+        metadata.arxiv_id = self._extract_arxiv_stamp(text)
+        if metadata.arxiv_id:
+            stamp_doi = arxiv_doi(metadata.arxiv_id)
+            metadata.doi_candidates = [stamp_doi] + [
+                d for d in metadata.doi_candidates if d.lower() != stamp_doi.lower()]
         if metadata.doi_candidates:
             metadata.doi, metadata.doi_source = metadata.doi_candidates[0], "text"
 
@@ -302,6 +356,9 @@ class PDFProcessor:
             # Some publishers embed the title cut at the colon; the page has it all.
             if not (font_title and self._extends(font_title, embedded_title[0])):
                 metadata.title, metadata.title_source = embedded_title
+
+        metadata.isbn_candidates = self._unique(
+            self._read_embedded_isbns(pdf_path) + self._extract_isbns(text))
 
         log.debug("DOI=%r (from %s), title=%r (from %s)", metadata.doi, metadata.doi_source,
                   metadata.title, metadata.title_source)
@@ -700,6 +757,45 @@ class PDFProcessor:
                 doi = self.DOI_SUPPLEMENT_SUFFIX.sub('', self._sanitize_doi(doi))
                 self._add_doi(dois, doi)
         return dois
+
+    def _extract_arxiv_stamp(self, text: str) -> Optional[str]:
+        """The arXiv ID (without version) in page 1's margin stamp, or None."""
+        match = self.ARXIV_STAMP.search(text)
+        return match.group(1) if match else None
+
+    def _extract_isbns(self, text: str) -> List[str]:
+        """Labeled, checksum-valid ISBNs in `text` as ISBN-13s, in page order."""
+        found = []
+        for match in self.ISBN_PATTERN.finditer(text):
+            isbn = isbn13(match.group(1))
+            if not isbn:
+                # The pattern may run on into a number after an ISBN-10 (a year).
+                digits = re.findall(r'[\dXx]', match.group(1))
+                isbn = isbn13(''.join(digits[:10]))
+            if isbn:
+                found.append(isbn)
+        return self._unique(found)
+
+    def _read_embedded_isbns(self, pdf_path: str) -> List[str]:
+        """ISBN-13s in the publisher's XMP keys (prism:isbn, pdfx:isbn).
+
+        papertag itself writes ISBNs only to /Keywords, /Subject and
+        dc:identifier, so these keys are never an earlier run's guess.
+        """
+        try:
+            with pikepdf.open(pdf_path) as pdf:
+                xmp = self._read_xmp(pdf)
+        except Exception as e:
+            log.debug("Could not read XMP from %s: %s", pdf_path, e)
+            return []
+        values = [v for k, v in xmp.items() if k.lower().endswith(self.XMP_ISBN_KEYS)]
+        found = (isbn13(str(v)) for v in values)
+        return self._unique(isbn for isbn in found if isbn)
+
+    @staticmethod
+    def _unique(items: Iterable[str]) -> List[str]:
+        """`items` without repeats, first occurrence kept."""
+        return list(dict.fromkeys(items))
 
     def _add_doi(self, dois: List[str], doi: str) -> None:
         """Add `doi` to `dois` unless it repeats one already there."""

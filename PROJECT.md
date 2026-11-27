@@ -7,7 +7,7 @@ papertag/
   cli.py                  argparse entry point + PDFMetadataManager orchestrator
   core/filename_parser.py hints (author, year, title) from existing filenames
   core/pdf_processor.py   page-1 text extraction (pypdf), OCR fallback, DOI/title heuristics
-  core/crossref_client.py Crossref search + DOI lookup, retry/backoff, match scoring
+  core/crossref_client.py Crossref search, DOI lookup (DataCite fallback), ISBN lookup, scoring
   core/metadata_updater.py write docinfo + XMP (pikepdf), Zotero-style filenames, rename
   ui/interactive.py       prompts: match selection, confirmation, error handling
   utils/logger.py         opt-in JSON session log (--log)
@@ -16,7 +16,8 @@ tests/                    pytest; run `python -m pytest` (PAPERTAG_NETWORK_TESTS
   pdf_fixtures.py         builds real one-page text PDFs with pikepdf
 ```
 
-Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref search
+Per-file flow: filename hints -> extract text/DOI/arXiv ID/ISBN -> DOI lookup, else ISBN
+lookup, else Crossref search
 -> pick match (batch: top score >= 0.80; interactive: user) -> write metadata -> rename.
 
 ## Decisions
@@ -122,6 +123,24 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
   run-together text layers and CJK). Rejected records are appended after search results at score
   0.00, so interactive users can pick one and batch never accepts one. Connection errors stop
   the lookups; 404s move to the next DOI.
+- 2026-11-26: arXiv IDs and ISBNs (step 3.7). `CrossrefClient.fetch_metadata` tries DataCite
+  (`api.datacite.org/dois/<doi>`) when Crossref 404s, and goes there directly for `10.48550/`
+  (arXiv's DataCite prefix; Crossref has none of them). DataCite requests carry no email: it's
+  for Crossref's polite pool. Only a 404 falls through; connection errors still raise.
+  `CrossrefAPIError.status_code` tells them apart. DataCite `resourceTypeGeneral` maps to Crossref
+  types (Preprint -> posted-content); every `10.48550/arXiv.` record is posted-content, since
+  some say "Text". arXiv IDs: the margin stamp (ID + version + `[category]`) only, never
+  a cited `arXiv:...`; it becomes `10.48550/arXiv.<id>` and goes first in `doi_candidates`
+  (the stamp says the PDF is that preprint, so it beats a published DOI on the page; consistent
+  with the preprint/article rule). An arXiv filename (`2101.00001v2.pdf`, `arXiv-...`; month
+  01-12 checked) sets `FilenameHints.arxiv_id` and no other hint; `lookup_doi` tries it after
+  the page DOIs. All are checked with `shown_on_page`. ISBNs: labeled only (`ISBN`, `ISBN-10/13`),
+  checksum-valid, normalized to ISBN-13; XMP `prism:isbn`/`pdfx:isbn` first, then page 1 (never
+  free-text Keywords). `cli.lookup_isbn` runs when no DOI resolved: Crossref
+  `filter=isbn:` + `query.bibliographic=<title>` (20 rows), and `CrossrefClient.isbn_record`
+  takes the record whose title (or title: subtitle) has similarity >= 0.85 to the query title
+  and is on the page; a chapter beats a book type on a tie. Score 1.0. User's choice: Crossref
+  only for ISBNs, no Open Library (a chapter PDF would get the whole book's record).
 
 ## Roadmap
 
@@ -186,7 +205,18 @@ Per-file flow: filename hints -> extract text/DOI -> DOI lookup or Crossref sear
       the page's main title (`PDFMetadata.title`) or scoring all candidates. Not handled either:
       DOIs wrapped without a hyphen (the cut copy is tried, then search), dropped ligatures
       ("Classication"), a Crossref title in another language than the page.
-   7. arXiv IDs, ISBNs
+   7. ~~arXiv IDs, ISBNs.~~ (done 2026-11-26) Survey of the 400-PDF sample: 4 distinct arXiv
+      PDFs (all stamped; 2 also embed the `10.48550` DOI, which used to 404 in Crossref and fall
+      to search), no arXiv filenames, no unstamped arXiv IDs on page 1; 3 ISBN files (2 on
+      page 1, 1 in XMP only), all books or chapters without a DOI. Live results, before ->
+      after: arXiv 0 -> 4 arXiv records (before: 3 skipped, 1 accepted the published
+      proceedings version); ISBN 1 of 3 found (a Cambridge monograph, before skipped). The
+      other 2 ISBNs have no Crossref records; search runs as before (one of them already
+      found the chapter, whose record lists different ISBNs). Real-PDF eval (37 files):
+      unchanged, 32/7/30 right, 0 wrong. Known gaps: a filename arXiv ID may be cut by the
+      3-lookup cap on a page with 3+ DOIs; old-style arXiv filenames (`hep-th9901001.pdf`)
+      are not read; the record title is written without its Crossref subtitle (as for search).
+   8. Dissertations, theses, and working papers -- using IDs or canonical URLs when available.  
 4. UX
    - `--dry-run`; skip already-processed files (`--force` to override)
    - side-by-side current vs new metadata; `--undo LOG`
